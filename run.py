@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Launch the RugScore Bot."""
+"""
+Solana Opportunity Hunter
+Discord bot entry point.
+"""
+
+import asyncio
 
 from bot.main import main
 
+
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
