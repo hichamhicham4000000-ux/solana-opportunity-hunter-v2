@@ -7,10 +7,11 @@ This module builds intelligence from:
 - token-account owner resolution;
 - recent wallet transaction activity.
 
-It does NOT execute trades.
-It does NOT claim that a wallet is profitable without evidence.
-It does NOT fabricate BUY/SELL activity when the available RPC
-data cannot support that conclusion.
+Important:
+- It does NOT execute trades.
+- It does NOT claim that a wallet is profitable without evidence.
+- It does NOT fabricate BUY/SELL activity.
+- General wallet activity is not treated as token-specific BUY/SELL evidence.
 """
 
 from __future__ import annotations
@@ -21,10 +22,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from smart_money.tracker import (
-    check_smart_money_activity,
-    find_smart_money_in_token,
-)
+from smart_money.wallet_list import get_smart_money_set
 from data.solana_rpc import (
     get_signatures_for_address,
     get_token_account_owner,
@@ -53,39 +51,27 @@ NEUTRAL_SMART_MONEY = 45.0
 
 @dataclass
 class WalletActivity:
-    """Recent activity observed for a wallet."""
+    """Recent network activity observed for a wallet."""
 
     address: str
-
     signature_count: int = 0
-
     recent_activity: bool = False
-
     oldest_signature_age_seconds: Optional[float] = None
-
     newest_signature_age_seconds: Optional[float] = None
-
     error: Optional[str] = None
 
 
 @dataclass
 class SmartMoneyWalletSignal:
-    """Smart-money signal for one wallet."""
+    """Smart-money signal for one actual wallet."""
 
     address: str
-
     amount: float = 0.0
-
     known: bool = False
-
     label: Optional[str] = None
-
     source: Optional[str] = None
-
     activity: Optional[WalletActivity] = None
-
     reasons: list[str] = field(default_factory=list)
-
     warnings: list[str] = field(default_factory=list)
 
 
@@ -94,8 +80,8 @@ class SmartMoneyAssessment:
     """
     Aggregated Smart Money intelligence for a token.
 
-    confidence means confidence in the DATA QUALITY of this
-    assessment, not probability of profit.
+    confidence means confidence in DATA QUALITY,
+    not probability of profit.
     """
 
     mint: str
@@ -149,12 +135,10 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
-def _signature_timestamp(signature: dict[str, Any]) -> Optional[float]:
-    """
-    Extract a transaction timestamp when available.
-
-    Solana RPC normally exposes `blockTime` on signature entries.
-    """
+def _signature_timestamp(
+    signature: dict[str, Any],
+) -> Optional[float]:
+    """Extract a transaction timestamp when available."""
 
     value = signature.get("blockTime")
 
@@ -170,7 +154,12 @@ def _signature_timestamp(signature: dict[str, Any]) -> Optional[float]:
 def _activity_score(
     activity: Optional[WalletActivity],
 ) -> float:
-    """Convert observed wallet activity into a bounded score."""
+    """
+    Convert observed wallet activity into a bounded score.
+
+    This measures activity intensity only.
+    It does NOT mean buying or selling.
+    """
 
     if activity is None:
         return 0.0
@@ -225,13 +214,13 @@ async def inspect_wallet_activity(
     limit: int = DEFAULT_SIGNATURE_LIMIT,
 ) -> WalletActivity:
     """
-    Inspect recent transaction activity for a wallet.
+    Inspect recent network activity for a wallet.
 
-    This function deliberately measures activity only.
+    This intentionally measures wallet activity only.
 
-    It does NOT classify transactions as BUY or SELL because the
-    currently available RPC helper does not provide a reliable,
-    token-specific trade classifier by itself.
+    It does NOT classify transactions as BUY or SELL because
+    the available RPC helper does not provide reliable,
+    token-specific trade classification by itself.
     """
 
     activity = WalletActivity(
@@ -250,7 +239,7 @@ async def inspect_wallet_activity(
         activity.signature_count = len(signatures)
         activity.recent_activity = True
 
-        timestamps = []
+        timestamps: list[float] = []
 
         now = time.time()
 
@@ -264,6 +253,7 @@ async def inspect_wallet_activity(
                 continue
 
             age = max(0.0, now - timestamp)
+
             timestamps.append(age)
 
         if timestamps:
@@ -308,12 +298,20 @@ async def resolve_holder_owner(
     if not isinstance(address, str) or not address:
         return None
 
-    owner = await get_token_account_owner(address)
+    # Prefer on-chain owner resolution.
+    try:
+        owner = await get_token_account_owner(address)
 
-    if owner:
-        return owner
+        if owner:
+            return owner
+    except Exception as exc:
+        logger.debug(
+            "Owner resolution failed for %s: %s",
+            address[:12],
+            exc,
+        )
 
-    # Some upstream data sources may already expose the owner.
+    # Some upstream sources may already expose the owner.
     direct_owner = holder.get("owner")
 
     if isinstance(direct_owner, str) and direct_owner:
@@ -328,6 +326,11 @@ async def resolve_top_holder_owners(
 ) -> list[dict[str, Any]]:
     """
     Resolve wallet owners for the token's largest accounts.
+
+    Returns records containing:
+    - token_account
+    - owner
+    - amount
     """
 
     if top_holders is None:
@@ -380,36 +383,70 @@ async def collect_known_smart_money(
     top_holders: Optional[list[dict[str, Any]]] = None,
 ) -> list[SmartMoneyWalletSignal]:
     """
-    Find known Smart Money wallets among top token holders.
+    Find known Smart Money wallets among the token's largest holders.
 
-    The existing tracker already performs direct matching against
-    the curated Smart Money wallet set.
+    IMPORTANT:
+    getTokenLargestAccounts returns token-account addresses.
+
+    Therefore the matching flow is:
+
+        token account
+              ↓
+        actual owner
+              ↓
+        known Smart Money set
+
+    This prevents incorrectly treating a token-account address
+    as a wallet address.
     """
 
+    del mint  # Reserved for future token-specific activity analysis.
+
     try:
-        matches = await find_smart_money_in_token(
-            mint
-        )
+        smart_wallets = get_smart_money_set()
+
     except Exception as exc:
         logger.warning(
-            "Known Smart Money lookup failed: %s",
+            "Failed to load Smart Money wallet set: %s",
             exc,
         )
+
+        return []
+
+    if not smart_wallets:
+        return []
+
+    resolved_holders = await resolve_top_holder_owners(
+        mint=mint,
+        top_holders=top_holders,
+    )
+
+    if not resolved_holders:
         return []
 
     signals: list[SmartMoneyWalletSignal] = []
 
-    for match in matches or []:
-        address = match.get("address")
+    seen_wallets: set[str] = set()
 
-        if not isinstance(address, str) or not address:
+    for holder in resolved_holders:
+        owner = holder.get("owner")
+
+        if not isinstance(owner, str) or not owner:
             continue
+
+        if owner in seen_wallets:
+            continue
+
+        if owner not in smart_wallets:
+            continue
+
+        seen_wallets.add(owner)
 
         signals.append(
             SmartMoneyWalletSignal(
-                address=address,
+                address=owner,
                 amount=_safe_float(
-                    match.get("amount")
+                    holder.get("amount")
                 ),
                 known=True,
                 reasons=[
@@ -428,7 +465,7 @@ async def collect_known_smart_money(
 async def enrich_wallet_signals(
     signals: list[SmartMoneyWalletSignal],
 ) -> list[SmartMoneyWalletSignal]:
-    """Add recent transaction activity to Smart Money signals."""
+    """Add recent network activity to Smart Money signals."""
 
     signals = signals[:MAX_WALLETS_TO_ANALYZE]
 
@@ -454,6 +491,11 @@ async def enrich_wallet_signals(
             signal.warnings.append(
                 "لم يظهر نشاط حديث في نافذة الفحص"
             )
+
+        # Explicitly prevent unsupported trade claims.
+        signal.warnings.append(
+            "النشاط الشبكي لا يثبت وحده شراء أو بيع هذا التوكن"
+        )
 
         return signal
 
@@ -481,15 +523,20 @@ async def enrich_wallet_signals(
 def calculate_smart_money_score(
     signals: list[SmartMoneyWalletSignal],
     holder_count: int,
-) -> tuple[float, float, list[str], list[str]]:
+) -> tuple[
+    float,
+    float,
+    list[str],
+    list[str],
+]:
     """
     Calculate Smart Money score and data confidence.
 
     Score components:
     - presence of known Smart Money;
-    - amount concentration;
-    - recent activity;
-    - data coverage.
+    - amount concentration among matched holders;
+    - recent network activity;
+    - holder coverage.
 
     This is an analytical signal, not a profit probability.
     """
@@ -503,21 +550,60 @@ def calculate_smart_money_score(
             20.0 if holder_count else 10.0,
             reasons,
             [
-                "لم يتم العثور على محفظة Smart Money معروفة"
+                "لم يتم العثور على محفظة Smart Money معروفة ضمن كبار الحائزين"
             ],
         )
 
     known_count = len(signals)
+
+    # ---------------------------------------------------------------
+    # Presence
+    # ---------------------------------------------------------------
 
     presence_score = min(
         100.0,
         35.0 + (known_count * 12.0),
     )
 
+    # ---------------------------------------------------------------
+    # Amount concentration
+    # ---------------------------------------------------------------
+
     total_amount = sum(
         max(signal.amount, 0.0)
         for signal in signals
     )
+
+    amount_values = [
+        max(signal.amount, 0.0)
+        for signal in signals
+    ]
+
+    total_top_holder_amount = sum(
+        amount_values
+    )
+
+    if total_top_holder_amount > 0:
+        concentration_ratio = (
+            total_amount
+            / total_top_holder_amount
+        )
+
+        concentration_score = min(
+            100.0,
+            40.0 + (concentration_ratio * 60.0),
+        )
+
+    else:
+        concentration_score = 0.0
+
+        warnings.append(
+            "لا توجد كمية موثوقة كافية لحساب تركيز Smart Money"
+        )
+
+    # ---------------------------------------------------------------
+    # Activity
+    # ---------------------------------------------------------------
 
     activity_scores = [
         _activity_score(signal.activity)
@@ -526,9 +612,11 @@ def calculate_smart_money_score(
     ]
 
     if activity_scores:
-        activity_score = sum(
-            activity_scores
-        ) / len(activity_scores)
+        activity_score = (
+            sum(activity_scores)
+            / len(activity_scores)
+        )
+
     else:
         activity_score = 0.0
 
@@ -542,10 +630,9 @@ def calculate_smart_money_score(
             "لا توجد بيانات نشاط كافية لتأكيد الحركة الحالية"
         )
 
-    concentration_score = min(
-        100.0,
-        40.0 + min(total_amount / 100_000.0, 60.0),
-    )
+    # ---------------------------------------------------------------
+    # Final score
+    # ---------------------------------------------------------------
 
     score = (
         presence_score * 0.45
@@ -558,6 +645,10 @@ def calculate_smart_money_score(
         min(100.0, score),
     )
 
+    # ---------------------------------------------------------------
+    # Holder coverage
+    # ---------------------------------------------------------------
+
     coverage = 0.0
 
     if holder_count > 0:
@@ -565,6 +656,10 @@ def calculate_smart_money_score(
             100.0,
             (known_count / holder_count) * 100.0,
         )
+
+    # ---------------------------------------------------------------
+    # Confidence
+    # ---------------------------------------------------------------
 
     confidence = (
         45.0
@@ -580,6 +675,10 @@ def calculate_smart_money_score(
         confidence,
     )
 
+    # ---------------------------------------------------------------
+    # Reasons
+    # ---------------------------------------------------------------
+
     if known_count >= 3:
         reasons.append(
             "وجود عدة محافظ Smart Money معروفة"
@@ -589,6 +688,10 @@ def calculate_smart_money_score(
         reasons.append(
             "تم العثور على محفظة Smart Money معروفة"
         )
+
+    reasons.append(
+        "المطابقة تمت باستخدام عنوان المحفظة المالكة الفعلية"
+    )
 
     return (
         round(score, 2),
@@ -636,19 +739,18 @@ async def assess_smart_money(
                 or []
             )
 
-        holder_count = len(top_holders)
-
-        known_signals = (
-            await collect_known_smart_money(
-                mint,
-                top_holders,
-            )
+        holder_count = min(
+            len(top_holders),
+            DEFAULT_TOP_HOLDERS,
         )
 
-        known_signals = (
-            await enrich_wallet_signals(
-                known_signals
-            )
+        known_signals = await collect_known_smart_money(
+            mint,
+            top_holders,
+        )
+
+        known_signals = await enrich_wallet_signals(
+            known_signals
         )
 
         (
@@ -743,6 +845,8 @@ async def assess_smart_money(
                     holder_coverage,
                     2,
                 ),
+                "buy_sell_classification": "UNSUPPORTED",
+                "owner_resolution": "ENABLED",
             },
         )
 
@@ -805,4 +909,4 @@ async def get_smart_money_summary(
         "reasons": assessment.reasons,
         "warnings": assessment.warnings,
         "metrics": assessment.metrics,
-}
+    }
