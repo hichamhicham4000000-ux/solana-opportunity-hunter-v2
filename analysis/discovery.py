@@ -3,9 +3,10 @@ Opportunity Discovery Engine.
 
 Discovers Solana meme-token candidates from:
 1. Pump.fun real-time token creation events.
-2. DexScreener market candidates.
+2. Pump.fun migration events.
+3. DexScreener market candidates.
 
-This module only discovers and ranks candidates.
+This module only discovers, deduplicates, and ranks candidates.
 It does NOT execute trades.
 """
 
@@ -14,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from data.cache import cache
@@ -22,7 +23,6 @@ from data.dexscreener import get_trending_tokens
 from data.pumpfun import pump_stream
 
 logger = logging.getLogger(__name__)
-
 
 DISCOVERY_CACHE_TTL = 30
 DEFAULT_MAX_CANDIDATES = 50
@@ -57,13 +57,9 @@ class Candidate:
 
     discovery_score: float = 0.0
 
-    reasons: list[str] = field(
-        default_factory=list
-    )
+    reasons: list[str] = field(default_factory=list)
 
-    discovered_at: float = field(
-        default_factory=time.time
-    )
+    discovered_at: float = field(default_factory=time.time)
 
     raw: dict[str, Any] = field(
         default_factory=dict,
@@ -117,9 +113,7 @@ def _candidate_from_dex(
 ) -> Optional[Candidate]:
     """Convert a DexScreener discovery result into a Candidate."""
 
-    mint = item.get(
-        "contract_address"
-    )
+    mint = item.get("contract_address")
 
     if not isinstance(mint, str) or not mint:
         return None
@@ -127,53 +121,21 @@ def _candidate_from_dex(
     return Candidate(
         mint=mint,
         source="dexscreener",
-
-        name=item.get(
-            "token_name",
-            "Unknown",
-        ),
-
-        symbol=item.get(
-            "token_symbol",
-            "???",
-        ),
-
-        price_usd=_float(
-            item.get("price_usd")
-        ),
-
-        liquidity_usd=_float(
-            item.get("liquidity_usd")
-        ),
-
-        market_cap=_float(
-            item.get("market_cap")
-        ),
-
-        volume_24h=_float(
-            item.get("volume_24h")
-        ),
-
-        price_change_5m=_float(
-            item.get("price_change_5m")
-        ),
-
-        price_change_1h=_float(
-            item.get("price_change_1h")
-        ),
-
-        price_change_6h=_float(
-            item.get("price_change_6h")
-        ),
-
-        price_change_24h=_float(
-            item.get("price_change_24h")
-        ),
-
-        pair_url=item.get(
-            "pair_url"
-        ),
-
+        name=item.get("token_name", "Unknown"),
+        symbol=item.get("token_symbol", "???"),
+        price_usd=_float(item.get("price_usd")),
+        liquidity_usd=_float(item.get("liquidity_usd")),
+        market_cap=_float(item.get("market_cap")),
+        volume_24h=_float(item.get("volume_24h")),
+        price_change_5m=_float(item.get("price_change_5m")),
+        price_change_1h=_float(item.get("price_change_1h")),
+        price_change_6h=_float(item.get("price_change_6h")),
+        price_change_24h=_float(item.get("price_change_24h")),
+        txns_buys=_int(item.get("txns_buys")),
+        txns_sells=_int(item.get("txns_sells")),
+        maker_count=_int(item.get("maker_count")),
+        pair_url=item.get("pair_url"),
+        dex_id=item.get("dex_id"),
         raw=item,
     )
 
@@ -183,9 +145,7 @@ def _candidate_from_pump(
 ) -> Optional[Candidate]:
     """Convert a Pump.fun event into a Candidate."""
 
-    mint = _mint_from_pump_event(
-        event
-    )
+    mint = _mint_from_pump_event(event)
 
     if not mint:
         return None
@@ -205,35 +165,19 @@ def _candidate_from_pump(
     candidate = Candidate(
         mint=mint,
         source="pumpfun",
-
         name=str(name),
-
         symbol=str(symbol),
-
-        price_usd=_float(
-            event.get("price")
+        price_usd=_float(event.get("price")),
+        liquidity_usd=_float(event.get("liquidity")),
+        market_cap=_float(event.get("marketCap")),
+        volume_24h=_float(event.get("volume")),
+        txns_buys=_int(event.get("buys")),
+        txns_sells=_int(event.get("sells")),
+        maker_count=_int(
+            event.get("makerCount", event.get("makers"))
         ),
-
-        liquidity_usd=_float(
-            event.get("liquidity")
-        ),
-
-        market_cap=_float(
-            event.get("marketCap")
-        ),
-
-        volume_24h=_float(
-            event.get("volume")
-        ),
-
-        txns_buys=_int(
-            event.get("buys")
-        ),
-
-        txns_sells=_int(
-            event.get("sells")
-        ),
-
+        pair_url=event.get("pair"),
+        dex_id=event.get("dex"),
         raw=event,
     )
 
@@ -261,37 +205,27 @@ def _score_candidate(
     # New-token signal
     # ---------------------------------------------------------
 
-    if candidate.source == "pumpfun":
+    if candidate.source.startswith("pumpfun"):
         score += 25
-        reasons.append(
-            "اكتشاف مبكر لتوكن جديد"
-        )
+        reasons.append("اكتشاف مبكر لتوكن جديد")
 
     # ---------------------------------------------------------
     # Liquidity
     # ---------------------------------------------------------
 
-    liquidity = (
-        candidate.liquidity_usd or 0
-    )
+    liquidity = candidate.liquidity_usd or 0.0
 
     if liquidity >= 100_000:
         score += 20
-        reasons.append(
-            "سيولة قوية"
-        )
+        reasons.append("سيولة قوية")
 
     elif liquidity >= 50_000:
         score += 15
-        reasons.append(
-            "سيولة جيدة"
-        )
+        reasons.append("سيولة جيدة")
 
     elif liquidity >= 20_000:
         score += 10
-        reasons.append(
-            "سيولة مقبولة"
-        )
+        reasons.append("سيولة مقبولة")
 
     elif liquidity > 5_000:
         score += 5
@@ -300,35 +234,22 @@ def _score_candidate(
     # Short-term momentum
     # ---------------------------------------------------------
 
-    change_5m = (
-        candidate.price_change_5m
-    )
-
-    change_1h = (
-        candidate.price_change_1h
-    )
+    change_5m = candidate.price_change_5m
+    change_1h = candidate.price_change_1h
 
     if change_5m is not None:
-
         if 1 <= change_5m <= 10:
             score += 15
-            reasons.append(
-                "زخم قصير المدى إيجابي"
-            )
+            reasons.append("زخم قصير المدى إيجابي")
 
         elif change_5m > 10:
             score += 7
-            reasons.append(
-                "ارتفاع سريع يحتاج إلى الحذر"
-            )
+            reasons.append("ارتفاع سريع يحتاج إلى الحذر")
 
     if change_1h is not None:
-
         if 3 <= change_1h <= 20:
             score += 15
-            reasons.append(
-                "زخم ساعة إيجابي"
-            )
+            reasons.append("زخم ساعة إيجابي")
 
         elif change_1h > 20:
             score += 5
@@ -337,21 +258,15 @@ def _score_candidate(
     # Volume
     # ---------------------------------------------------------
 
-    volume = (
-        candidate.volume_24h or 0
-    )
+    volume = candidate.volume_24h or 0.0
 
     if volume >= 1_000_000:
         score += 15
-        reasons.append(
-            "حجم تداول مرتفع"
-        )
+        reasons.append("حجم تداول مرتفع")
 
     elif volume >= 250_000:
         score += 10
-        reasons.append(
-            "حجم تداول جيد"
-        )
+        reasons.append("حجم تداول جيد")
 
     elif volume >= 50_000:
         score += 5
@@ -360,26 +275,21 @@ def _score_candidate(
     # Buy pressure
     # ---------------------------------------------------------
 
-    buys = candidate.txns_buys
-    sells = candidate.txns_sells
+    buys = max(candidate.txns_buys, 0)
+    sells = max(candidate.txns_sells, 0)
 
     total = buys + sells
 
     if total > 0:
-
         buy_ratio = buys / total
 
         if 0.55 <= buy_ratio <= 0.70:
             score += 10
-            reasons.append(
-                "ضغط شراء متوازن"
-            )
+            reasons.append("ضغط شراء متوازن")
 
         elif 0.70 < buy_ratio <= 0.80:
             score += 7
-            reasons.append(
-                "ضغط شراء قوي"
-            )
+            reasons.append("ضغط شراء قوي")
 
         elif buy_ratio > 0.80:
             score += 2
@@ -393,9 +303,7 @@ def _score_candidate(
 
     if candidate.maker_count >= 500:
         score += 10
-        reasons.append(
-            "عدد مرتفع من المتداولين"
-        )
+        reasons.append("عدد مرتفع من المتداولين")
 
     elif candidate.maker_count >= 100:
         score += 5
@@ -405,7 +313,11 @@ def _score_candidate(
         100.0,
     )
 
-    candidate.reasons = reasons
+    candidate.reasons = list(
+        dict.fromkeys(
+            candidate.reasons + reasons
+        )
+    )
 
     return candidate
 
@@ -417,10 +329,9 @@ def _merge_candidate(
     """Merge two discoveries of the same token."""
 
     if existing.source != incoming.source:
-        existing.source = (
-            f"{existing.source}+"
-            f"{incoming.source}"
-        )
+        sources = set(existing.source.split("+"))
+        sources.update(incoming.source.split("+"))
+        existing.source = "+".join(sorted(sources))
 
     for field_name in (
         "name",
@@ -428,22 +339,12 @@ def _merge_candidate(
         "pair_url",
         "dex_id",
     ):
-        current = getattr(
-            existing,
-            field_name,
-        )
-
-        incoming_value = getattr(
-            incoming,
-            field_name,
-        )
+        current = getattr(existing, field_name)
+        incoming_value = getattr(incoming, field_name)
 
         if (
             not current
-            or current in (
-                "Unknown",
-                "???",
-            )
+            or current in ("Unknown", "???")
         ):
             if incoming_value:
                 setattr(
@@ -464,15 +365,8 @@ def _merge_candidate(
     )
 
     for field_name in numeric_fields:
-        current = getattr(
-            existing,
-            field_name,
-        )
-
-        incoming_value = getattr(
-            incoming,
-            field_name,
-        )
+        current = getattr(existing, field_name)
+        incoming_value = getattr(incoming, field_name)
 
         if current is None and incoming_value is not None:
             setattr(
@@ -482,43 +376,37 @@ def _merge_candidate(
             )
 
     if incoming.txns_buys:
-        existing.txns_buys = (
-            max(
-                existing.txns_buys,
-                incoming.txns_buys,
-            )
+        existing.txns_buys = max(
+            existing.txns_buys,
+            incoming.txns_buys,
         )
 
     if incoming.txns_sells:
-        existing.txns_sells = (
-            max(
-                existing.txns_sells,
-                incoming.txns_sells,
-            )
+        existing.txns_sells = max(
+            existing.txns_sells,
+            incoming.txns_sells,
         )
 
     if incoming.maker_count:
-        existing.maker_count = (
-            max(
-                existing.maker_count,
-                incoming.maker_count,
-            )
+        existing.maker_count = max(
+            existing.maker_count,
+            incoming.maker_count,
         )
 
     existing.reasons = list(
         dict.fromkeys(
-            existing.reasons
-            + incoming.reasons
+            existing.reasons + incoming.reasons
         )
     )
 
-    existing.raw.update(
-        incoming.raw
+    existing.raw.update(incoming.raw)
+
+    existing.discovered_at = max(
+        existing.discovered_at,
+        incoming.discovered_at,
     )
 
-    return _score_candidate(
-        existing
-    )
+    return _score_candidate(existing)
 
 
 class OpportunityDiscovery:
@@ -530,7 +418,7 @@ class OpportunityDiscovery:
     - receive Pump.fun real-time discoveries;
     - deduplicate candidates;
     - rank them;
-    - expose a candidate queue for deeper analysis.
+    - expose candidates for deeper analysis.
     """
 
     def __init__(
@@ -542,14 +430,25 @@ class OpportunityDiscovery:
             max_candidates,
         )
 
-        self._candidates: dict[
-            str,
-            Candidate,
-        ] = {}
-
+        self._candidates: dict[str, Candidate] = {}
         self._lock = asyncio.Lock()
-
         self._started = False
+
+    # ---------------------------------------------------------
+    # Serialization
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _serialize_candidate(
+        candidate: Candidate,
+    ) -> dict[str, Any]:
+        """Convert a Candidate into a cache-safe dictionary."""
+
+        return asdict(candidate)
+
+    # ---------------------------------------------------------
+    # Candidate management
+    # ---------------------------------------------------------
 
     async def add_candidate(
         self,
@@ -557,15 +456,10 @@ class OpportunityDiscovery:
     ) -> Candidate:
         """Add or update a discovered candidate."""
 
-        candidate = _score_candidate(
-            candidate
-        )
+        candidate = _score_candidate(candidate)
 
         async with self._lock:
-
-            existing = self._candidates.get(
-                candidate.mint
-            )
+            existing = self._candidates.get(candidate.mint)
 
             if existing:
                 candidate = _merge_candidate(
@@ -573,11 +467,8 @@ class OpportunityDiscovery:
                     candidate,
                 )
 
-            self._candidates[
-                candidate.mint
-            ] = candidate
+            self._candidates[candidate.mint] = candidate
 
-            # Keep memory bounded.
             if (
                 len(self._candidates)
                 > self.max_candidates * 3
@@ -598,14 +489,43 @@ class OpportunityDiscovery:
             reverse=True,
         )
 
-        keep = ranked[
-            : self.max_candidates * 2
-        ]
+        keep = ranked[: self.max_candidates * 2]
 
         self._candidates = {
             item.mint: item
             for item in keep
         }
+
+    async def get_candidates(
+        self,
+        limit: Optional[int] = None,
+    ) -> list[Candidate]:
+        """Return currently stored candidates."""
+
+        async with self._lock:
+            ranked = sorted(
+                self._candidates.values(),
+                key=lambda item: (
+                    item.discovery_score,
+                    item.discovered_at,
+                ),
+                reverse=True,
+            )
+
+        if limit is None:
+            limit = self.max_candidates
+
+        return ranked[: max(1, limit)]
+
+    async def clear(self):
+        """Clear the in-memory candidate pool."""
+
+        async with self._lock:
+            self._candidates.clear()
+
+    # ---------------------------------------------------------
+    # Pump.fun handlers
+    # ---------------------------------------------------------
 
     async def handle_new_token(
         self,
@@ -613,9 +533,7 @@ class OpportunityDiscovery:
     ):
         """Handle a Pump.fun new-token event."""
 
-        candidate = _candidate_from_pump(
-            event
-        )
+        candidate = _candidate_from_pump(event)
 
         if not candidate:
             logger.warning(
@@ -623,9 +541,7 @@ class OpportunityDiscovery:
             )
             return
 
-        candidate = await self.add_candidate(
-            candidate
-        )
+        candidate = await self.add_candidate(candidate)
 
         logger.info(
             "Discovered Pump.fun candidate: "
@@ -640,9 +556,7 @@ class OpportunityDiscovery:
     ):
         """Handle a Pump.fun migration event."""
 
-        candidate = _candidate_from_pump(
-            event
-        )
+        candidate = _candidate_from_pump(event)
 
         if not candidate:
             return
@@ -656,9 +570,11 @@ class OpportunityDiscovery:
             100,
         )
 
-        await self.add_candidate(
-            candidate
-        )
+        await self.add_candidate(candidate)
+
+    # ---------------------------------------------------------
+    # DexScreener
+    # ---------------------------------------------------------
 
     async def discover_dexscreener(
         self,
@@ -676,13 +592,10 @@ class OpportunityDiscovery:
             )
             return []
 
-        discovered = []
+        discovered: list[Candidate] = []
 
         for item in items:
-
-            candidate = _candidate_from_dex(
-                item
-            )
+            candidate = _candidate_from_dex(item)
 
             if not candidate:
                 continue
@@ -691,11 +604,13 @@ class OpportunityDiscovery:
                 candidate
             )
 
-            discovered.append(
-                candidate
-            )
+            discovered.append(candidate)
 
         return discovered
+
+    # ---------------------------------------------------------
+    # Discovery cycle
+    # ---------------------------------------------------------
 
     async def discover_once(
         self,
@@ -706,42 +621,81 @@ class OpportunityDiscovery:
         Returns candidates sorted by discovery score.
         """
 
-        cache_key = (
-            "opportunity:discovery:v1"
-        )
+        cache_key = "opportunity:discovery:v2"
 
-        cached = cache.get(
-            cache_key
-        )
+        cached = cache.get(cache_key)
 
         if cached is not None:
-            return [
-                Candidate(**item)
-                for item in cached
-            ]
+            try:
+                return [
+                    Candidate(**item)
+                    for item in cached
+                ]
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid discovery cache; rebuilding."
+                )
 
         await self.discover_dexscreener()
 
-        async with self._lock:
-
-            ranked = sorted(
-                self._candidates.values(),
-                key=lambda item: (
-                    item.discovery_score,
-                    item.discovered_at,
-                ),
-                reverse=True,
-            )
-
-            selected = ranked[
-                : self.max_candidates
-            ]
+        selected = await self.get_candidates(
+            self.max_candidates
+        )
 
         serializable = [
-            self._serialize_candidate(
-                candidate
-            )
+            self._serialize_candidate(candidate)
             for candidate in selected
         ]
 
-        cache
+        cache.set(
+            cache_key,
+            serializable,
+            ttl=DISCOVERY_CACHE_TTL,
+        )
+
+        return selected
+
+    # ---------------------------------------------------------
+    # Pump.fun lifecycle
+    # ---------------------------------------------------------
+
+    async def start(self):
+        """
+        Start Pump.fun real-time discovery callbacks.
+
+        This registers callbacks and starts the shared stream.
+        """
+
+        if self._started:
+            return
+
+        pump_stream.on_new_token(
+            self.handle_new_token
+        )
+
+        pump_stream.on_migration(
+            self.handle_migration
+        )
+
+        self._started = True
+
+        logger.info(
+            "Opportunity discovery Pump.fun callbacks registered."
+        )
+
+    async def stop(self):
+        """
+        Stop discovery.
+
+        The shared Pump.fun stream is not stopped here because
+        another subsystem may be using the same global stream.
+        """
+
+        self._started = False
+
+        logger.info(
+            "Opportunity discovery stopped."
+        )
+
+
+opportunity_discovery = OpportunityDiscovery()
