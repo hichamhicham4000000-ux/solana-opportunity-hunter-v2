@@ -6,6 +6,7 @@ Combines:
         -> Ranking
         -> Security Gate
         -> Full 8-criteria analysis
+        -> Smart Money Intelligence
         -> Opportunity decision
 
 This module is an analytical decision layer.
@@ -15,6 +16,7 @@ It does NOT:
 - hold funds
 - guarantee profits
 - treat confidence as probability of profit
+- treat Smart Money presence as proof of future profit
 
 The existing analysis.engine remains responsible for the actual
 on-chain/security criteria analysis.
@@ -30,6 +32,10 @@ from analysis.discovery import Candidate
 from analysis.engine import analyze_token
 from analysis.ranker import RankedOpportunity
 from analysis.security_gate import SecurityDecision
+from analysis.smart_money_intelligence import (
+    SmartMoneyAssessment,
+    assess_smart_money,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +56,6 @@ INVALIDATED = "INVALIDATED"
 # Data structures
 # ---------------------------------------------------------------------
 
-
 @dataclass
 class DeepIntelligenceResult:
     """
@@ -62,6 +67,13 @@ class DeepIntelligenceResult:
     confidence:
         Confidence in the analysis quality/data completeness.
         It is NOT a probability of profit.
+
+    smart_money_score:
+        Supporting Smart Money signal from known-wallet presence
+        and observed wallet activity.
+
+    smart_money_confidence:
+        Confidence in the Smart Money data quality.
     """
 
     mint: str
@@ -73,6 +85,10 @@ class DeepIntelligenceResult:
     discovery_score: float
     data_quality: float
 
+    smart_money_score: float
+    smart_money_confidence: float
+    smart_money_state: str
+
     opportunity_score: float
     confidence: float
 
@@ -81,13 +97,25 @@ class DeepIntelligenceResult:
     risk_label: str
     risk_description: str
 
-    criteria: dict[str, dict[str, Any]] = field(default_factory=dict)
+    criteria: dict[str, dict[str, Any]] = field(
+        default_factory=dict
+    )
 
-    reasons: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    blockers: list[str] = field(default_factory=list)
+    reasons: list[str] = field(
+        default_factory=list
+    )
 
-    raw_analysis: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(
+        default_factory=list
+    )
+
+    blockers: list[str] = field(
+        default_factory=list
+    )
+
+    raw_analysis: dict[str, Any] = field(
+        default_factory=dict
+    )
 
     @property
     def is_actionable(self) -> bool:
@@ -101,8 +129,12 @@ class DeepIntelligenceResult:
 # Helpers
 # ---------------------------------------------------------------------
 
+def _number(
+    value: Any,
+    default: float = 0.0,
+) -> float:
+    """Safely convert a value to float."""
 
-def _number(value: Any, default: float = 0.0) -> float:
     if value is None:
         return default
 
@@ -117,7 +149,12 @@ def _clamp(
     minimum: float = 0.0,
     maximum: float = 100.0,
 ) -> float:
-    return max(minimum, min(value, maximum))
+    """Clamp a numeric value to a bounded range."""
+
+    return max(
+        minimum,
+        min(value, maximum),
+    )
 
 
 def _criterion_score(
@@ -139,10 +176,16 @@ def _criterion_score(
         return None
 
     if hasattr(result, "score"):
-        return _number(result.score, 0.0)
+        return _number(
+            result.score,
+            0.0,
+        )
 
     if isinstance(result, dict):
-        return _number(result.get("score"), 0.0)
+        return _number(
+            result.get("score"),
+            0.0,
+        )
 
     return None
 
@@ -159,24 +202,78 @@ def _criterion_details(
     criteria = analysis.get("criteria") or {}
 
     for name, result in criteria.items():
+
         if hasattr(result, "score"):
             output[name] = {
-                "name": getattr(result, "name", name),
-                "score": _number(getattr(result, "score", 0)),
-                "flags": list(getattr(result, "flags", []) or []),
-                "details": dict(getattr(result, "details", {}) or {}),
+                "name": getattr(
+                    result,
+                    "name",
+                    name,
+                ),
+                "score": _number(
+                    getattr(
+                        result,
+                        "score",
+                        0,
+                    )
+                ),
+                "flags": list(
+                    getattr(
+                        result,
+                        "flags",
+                        [],
+                    )
+                    or []
+                ),
+                "details": dict(
+                    getattr(
+                        result,
+                        "details",
+                        {},
+                    )
+                    or {}
+                ),
                 "estimated": bool(
-                    getattr(result, "estimated", False)
+                    getattr(
+                        result,
+                        "estimated",
+                        False,
+                    )
                 ),
             }
 
         elif isinstance(result, dict):
             output[name] = {
-                "name": result.get("name", name),
-                "score": _number(result.get("score", 0)),
-                "flags": list(result.get("flags", []) or []),
-                "details": dict(result.get("details", {}) or {}),
-                "estimated": bool(result.get("estimated", False)),
+                "name": result.get(
+                    "name",
+                    name,
+                ),
+                "score": _number(
+                    result.get(
+                        "score",
+                        0,
+                    )
+                ),
+                "flags": list(
+                    result.get(
+                        "flags",
+                        [],
+                    )
+                    or []
+                ),
+                "details": dict(
+                    result.get(
+                        "details",
+                        {},
+                    )
+                    or {}
+                ),
+                "estimated": bool(
+                    result.get(
+                        "estimated",
+                        False,
+                    )
+                ),
             }
 
     return output
@@ -185,7 +282,11 @@ def _criterion_details(
 def _extract_flags(
     analysis: dict[str, Any],
 ) -> list[str]:
-    flags = analysis.get("all_flags") or []
+    """Extract all analysis flags."""
+
+    flags = analysis.get(
+        "all_flags"
+    ) or []
 
     return [
         str(flag)
@@ -194,22 +295,40 @@ def _extract_flags(
     ]
 
 
+# ---------------------------------------------------------------------
+# Confidence
+# ---------------------------------------------------------------------
+
 def _calculate_confidence(
     analysis: dict[str, Any],
     security_decision: SecurityDecision,
+    smart_money: Optional[
+        SmartMoneyAssessment
+    ] = None,
 ) -> float:
     """
     Estimate analytical confidence.
 
-    This represents evidence/data quality, not expected return.
+    This represents evidence/data quality,
+    not expected return.
+
+    Smart Money data quality is included as a supporting
+    confidence component.
     """
 
     data_quality = _number(
-        analysis.get("data_quality"),
+        analysis.get(
+            "data_quality"
+        ),
         0.0,
     )
 
-    estimated = analysis.get("estimated_criteria") or []
+    estimated = (
+        analysis.get(
+            "estimated_criteria"
+        )
+        or []
+    )
 
     criterion_count = 8
 
@@ -217,7 +336,8 @@ def _calculate_confidence(
         completeness = (
             max(
                 0,
-                criterion_count - len(estimated),
+                criterion_count
+                - len(estimated),
             )
             / criterion_count
             * 100
@@ -227,25 +347,47 @@ def _calculate_confidence(
 
     gate_quality = 100.0
 
-    if security_decision.status == "PASS_WITH_WARNINGS":
+    if (
+        security_decision.status
+        == "PASS_WITH_WARNINGS"
+    ):
         gate_quality = 75.0
 
     elif not security_decision.passed:
         gate_quality = 30.0
 
+    smart_money_quality = 50.0
+
+    if smart_money is not None:
+        smart_money_quality = _number(
+            smart_money.confidence,
+            0.0,
+        )
+
     confidence = (
-        data_quality * 0.60
-        + completeness * 0.25
+        data_quality * 0.50
+        + completeness * 0.20
         + gate_quality * 0.15
+        + smart_money_quality * 0.15
     )
 
-    return round(_clamp(confidence), 1)
+    return round(
+        _clamp(confidence),
+        1,
+    )
 
+
+# ---------------------------------------------------------------------
+# Opportunity score
+# ---------------------------------------------------------------------
 
 def _calculate_opportunity_score(
     analysis: dict[str, Any],
     ranked: RankedOpportunity,
     security_decision: SecurityDecision,
+    smart_money: Optional[
+        SmartMoneyAssessment
+    ] = None,
 ) -> float:
     """
     Calculate the opportunity score.
@@ -259,10 +401,18 @@ def _calculate_opportunity_score(
         - discovery strength
         - data quality
         - security gate result
+        - Smart Money intelligence
+
+    Smart Money contributes 15%.
+
+    A failed security gate always receives zero gate weight.
+    Smart Money cannot override a failed security gate.
     """
 
     security_score = _number(
-        analysis.get("total_score"),
+        analysis.get(
+            "total_score"
+        ),
         0.0,
     )
 
@@ -277,7 +427,9 @@ def _calculate_opportunity_score(
     )
 
     data_quality = _number(
-        analysis.get("data_quality"),
+        analysis.get(
+            "data_quality"
+        ),
         0.0,
     )
 
@@ -286,19 +438,50 @@ def _calculate_opportunity_score(
     if not security_decision.passed:
         gate_score = 0.0
 
-    elif security_decision.status == "PASS_WITH_WARNINGS":
+    elif (
+        security_decision.status
+        == "PASS_WITH_WARNINGS"
+    ):
         gate_score = 65.0
 
+    # No Smart Money evidence is treated as neutral,
+    # not as a positive signal.
+    smart_money_score = 50.0
+
+    if smart_money is not None:
+        smart_money_score = _number(
+            smart_money.score,
+            0.0,
+        )
+
+    # Final weights:
+    #
+    # Security       35%
+    # Ranking        20%
+    # Discovery      10%
+    # Data Quality   10%
+    # Gate           10%
+    # Smart Money    15%
+    #
+    # Total          100%
     score = (
-        security_score * 0.40
-        + rank_score * 0.25
+        security_score * 0.35
+        + rank_score * 0.20
         + discovery_score * 0.10
-        + data_quality * 0.15
+        + data_quality * 0.10
         + gate_score * 0.10
+        + smart_money_score * 0.15
     )
 
-    return round(_clamp(score), 1)
+    return round(
+        _clamp(score),
+        1,
+    )
 
+
+# ---------------------------------------------------------------------
+# Decision
+# ---------------------------------------------------------------------
 
 def _decision_from_scores(
     opportunity_score: float,
@@ -324,17 +507,31 @@ def _decision_from_scores(
         return SPECULATIVE
 
     # Extremely vertical moves are not automatically opportunities.
-    change_5m = _number(candidate.price_change_5m)
-    change_1h = _number(candidate.price_change_1h)
+    change_5m = _number(
+        candidate.price_change_5m
+    )
 
-    if change_5m > 50 or change_1h > 150:
+    change_1h = _number(
+        candidate.price_change_1h
+    )
+
+    if (
+        change_5m > 50
+        or change_1h > 150
+    ):
         if opportunity_score < 80:
             return WATCH
 
-    if opportunity_score >= 82 and security_score >= 75:
+    if (
+        opportunity_score >= 82
+        and security_score >= 75
+    ):
         return STRONG_OPPORTUNITY
 
-    if opportunity_score >= 68 and security_score >= 60:
+    if (
+        opportunity_score >= 68
+        and security_score >= 60
+    ):
         return OPPORTUNITY
 
     if opportunity_score >= 50:
@@ -343,20 +540,33 @@ def _decision_from_scores(
     return SPECULATIVE
 
 
+# ---------------------------------------------------------------------
+# Reasons
+# ---------------------------------------------------------------------
+
 def _build_reasons(
     analysis: dict[str, Any],
     ranked: RankedOpportunity,
     opportunity_score: float,
+    smart_money: Optional[
+        SmartMoneyAssessment
+    ] = None,
 ) -> list[str]:
+    """Build human-readable reasons supporting the result."""
+
     reasons: list[str] = []
 
     security_score = _number(
-        analysis.get("total_score"),
+        analysis.get(
+            "total_score"
+        ),
         0.0,
     )
 
     data_quality = _number(
-        analysis.get("data_quality"),
+        analysis.get(
+            "data_quality"
+        ),
         0.0,
     )
 
@@ -390,17 +600,63 @@ def _build_reasons(
             "توافق جيد بين السلامة والترتيب وجودة البيانات"
         )
 
-    # Preserve the strongest reasons generated by the ranking layer.
-    reasons.extend(ranked.reasons[:4])
+    if smart_money is not None:
 
-    return list(dict.fromkeys(reasons))
+        if smart_money.state == "STRONG":
+            reasons.append(
+                "إشارة Smart Money قوية نسبيًا"
+            )
 
+        elif smart_money.state == "POSITIVE":
+            reasons.append(
+                "إشارة Smart Money إيجابية"
+            )
+
+        elif smart_money.state == "NEUTRAL":
+            reasons.append(
+                "إشارة Smart Money محايدة"
+            )
+
+        elif smart_money.state == "WEAK":
+            reasons.append(
+                "إشارة Smart Money ضعيفة"
+            )
+
+        elif smart_money.state == "NONE":
+            reasons.append(
+                "لا توجد محفظة Smart Money معروفة ضمن البيانات المتاحة"
+            )
+
+    # Preserve the strongest reasons generated by
+    # the ranking layer.
+    reasons.extend(
+        ranked.reasons[:4]
+    )
+
+    if smart_money is not None:
+        reasons.extend(
+            smart_money.reasons[:3]
+        )
+
+    return list(
+        dict.fromkeys(reasons)
+    )
+
+
+# ---------------------------------------------------------------------
+# Warnings
+# ---------------------------------------------------------------------
 
 def _build_warnings(
     analysis: dict[str, Any],
     ranked: RankedOpportunity,
     security_decision: SecurityDecision,
+    smart_money: Optional[
+        SmartMoneyAssessment
+    ] = None,
 ) -> list[str]:
+    """Build human-readable warnings."""
+
     warnings: list[str] = []
 
     warnings.extend(
@@ -412,7 +668,9 @@ def _build_warnings(
     )
 
     data_quality = _number(
-        analysis.get("data_quality"),
+        analysis.get(
+            "data_quality"
+        ),
         0.0,
     )
 
@@ -421,19 +679,47 @@ def _build_warnings(
             "جودة البيانات أقل من المستوى المطلوب لثقة عالية"
         )
 
-    estimated = analysis.get("estimated_criteria") or []
+    estimated = (
+        analysis.get(
+            "estimated_criteria"
+        )
+        or []
+    )
 
     if estimated:
         warnings.append(
             "بعض معايير التحليل اعتمدت على بيانات تقديرية أو غير مكتملة"
         )
 
-    return list(dict.fromkeys(warnings))
+    if smart_money is not None:
 
+        warnings.extend(
+            smart_money.warnings[:4]
+        )
+
+        if smart_money.confidence < 50:
+            warnings.append(
+                "ثقة Smart Money محدودة بسبب نقص بيانات النشاط"
+            )
+
+        warnings.append(
+            "Smart Money إشارة مساعدة وليست ضمانًا للربح"
+        )
+
+    return list(
+        dict.fromkeys(warnings)
+    )
+
+
+# ---------------------------------------------------------------------
+# Blockers
+# ---------------------------------------------------------------------
 
 def _build_blockers(
     security_decision: SecurityDecision,
 ) -> list[str]:
+    """Return security blockers."""
+
     if security_decision.passed:
         return []
 
@@ -448,11 +734,13 @@ def _build_blockers(
 # Main engine
 # ---------------------------------------------------------------------
 
-
 class DeepIntelligenceEngine:
     """
     Coordinates ranked opportunities with the existing full analysis
-    engine and converts the evidence into an opportunity decision.
+    engine and Smart Money Intelligence.
+
+    The final decision remains conservative:
+    security gate first, then evidence aggregation.
     """
 
     async def analyze(
@@ -461,11 +749,17 @@ class DeepIntelligenceEngine:
         security_decision: SecurityDecision,
         force: bool = False,
     ) -> DeepIntelligenceResult:
+
         candidate = ranked.candidate
 
-        # A failed security gate should normally never reach deep
-        # analysis. The force option exists for diagnostics/testing.
-        if not security_decision.passed and not force:
+        # A failed security gate should normally never reach
+        # deep analysis.
+        #
+        # The force option exists for diagnostics/testing.
+        if (
+            not security_decision.passed
+            and not force
+        ):
             return self._blocked_result(
                 candidate,
                 ranked,
@@ -478,22 +772,42 @@ class DeepIntelligenceEngine:
             candidate.mint[:8],
         )
 
-        analysis = await analyze_token(candidate.mint)
+        # -------------------------------------------------------------
+        # Existing deep analysis
+        # -------------------------------------------------------------
+
+        analysis = await analyze_token(
+            candidate.mint
+        )
+
+        # -------------------------------------------------------------
+        # Smart Money Intelligence
+        # -------------------------------------------------------------
+
+        smart_money = await assess_smart_money(
+            candidate.mint
+        )
 
         security_score = _number(
-            analysis.get("total_score"),
+            analysis.get(
+                "total_score"
+            ),
             0.0,
         )
 
         confidence = _calculate_confidence(
             analysis,
             security_decision,
+            smart_money,
         )
 
-        opportunity_score = _calculate_opportunity_score(
-            analysis,
-            ranked,
-            security_decision,
+        opportunity_score = (
+            _calculate_opportunity_score(
+                analysis,
+                ranked,
+                security_decision,
+                smart_money,
+            )
         )
 
         decision = _decision_from_scores(
@@ -504,85 +818,177 @@ class DeepIntelligenceEngine:
             candidate=candidate,
         )
 
-        criteria = _criterion_details(analysis)
+        criteria = _criterion_details(
+            analysis
+        )
 
         reasons = _build_reasons(
             analysis,
             ranked,
             opportunity_score,
+            smart_money,
         )
 
         warnings = _build_warnings(
             analysis,
             ranked,
             security_decision,
+            smart_money,
         )
 
         blockers = _build_blockers(
-            security_decision,
+            security_decision
         )
+
+        # -------------------------------------------------------------
+        # Result
+        # -------------------------------------------------------------
 
         result = DeepIntelligenceResult(
             mint=candidate.mint,
+
             token_name=analysis.get(
                 "token_name",
                 candidate.name,
             ),
+
             token_symbol=analysis.get(
                 "token_symbol",
                 candidate.symbol,
             ),
+
             security_score=round(
                 security_score,
                 1,
             ),
+
             rank_score=round(
                 ranked.rank_score,
                 1,
             ),
+
             discovery_score=round(
                 candidate.discovery_score,
                 1,
             ),
+
             data_quality=round(
                 _number(
-                    analysis.get("data_quality"),
+                    analysis.get(
+                        "data_quality"
+                    ),
                     0.0,
                 ),
                 1,
             ),
-            opportunity_score=opportunity_score,
+
+            smart_money_score=round(
+                smart_money.score,
+                1,
+            ),
+
+            smart_money_confidence=round(
+                smart_money.confidence,
+                1,
+            ),
+
+            smart_money_state=(
+                smart_money.state
+            ),
+
+            opportunity_score=(
+                opportunity_score
+            ),
+
             confidence=confidence,
+
             decision=decision,
+
             risk_label=str(
                 analysis.get(
                     "risk_label",
                     "UNKNOWN",
                 )
             ),
+
             risk_description=str(
                 analysis.get(
                     "risk_desc",
                     "",
                 )
             ),
+
             criteria=criteria,
+
             reasons=reasons,
+
             warnings=warnings,
+
             blockers=blockers,
-            raw_analysis=analysis,
+
+            raw_analysis={
+                **analysis,
+
+                "smart_money": {
+                    "score": (
+                        smart_money.score
+                    ),
+
+                    "confidence": (
+                        smart_money.confidence
+                    ),
+
+                    "state": (
+                        smart_money.state
+                    ),
+
+                    "known_wallet_count": (
+                        smart_money.known_wallet_count
+                    ),
+
+                    "active_known_wallet_count": (
+                        smart_money.active_known_wallet_count
+                    ),
+
+                    "total_known_holder_amount": (
+                        smart_money.total_known_holder_amount
+                    ),
+
+                    "holder_coverage": (
+                        smart_money.holder_coverage
+                    ),
+
+                    "reasons": (
+                        smart_money.reasons
+                    ),
+
+                    "warnings": (
+                        smart_money.warnings
+                    ),
+
+                    "metrics": (
+                        smart_money.metrics
+                    ),
+                },
+            },
         )
 
         logger.info(
             "Deep intelligence completed: %s %s "
-            "opportunity=%.1f confidence=%.1f",
+            "opportunity=%.1f confidence=%.1f "
+            "smart_money=%.1f",
             result.token_symbol,
             result.decision,
             result.opportunity_score,
             result.confidence,
+            result.smart_money_score,
         )
 
         return result
+
+    # -----------------------------------------------------------------
+    # Candidate wrapper
+    # -----------------------------------------------------------------
 
     async def analyze_candidate(
         self,
@@ -594,12 +1000,18 @@ class DeepIntelligenceEngine:
         Convenience wrapper for callers that already have a candidate.
         """
 
-        if ranked.candidate.mint != candidate.mint:
+        if (
+            ranked.candidate.mint
+            != candidate.mint
+        ):
             raise ValueError(
                 "Candidate and RankedOpportunity mint addresses do not match"
             )
 
-        if security_decision.mint != candidate.mint:
+        if (
+            security_decision.mint
+            != candidate.mint
+        ):
             raise ValueError(
                 "Candidate and SecurityDecision mint addresses do not match"
             )
@@ -609,10 +1021,17 @@ class DeepIntelligenceEngine:
             security_decision=security_decision,
         )
 
+    # -----------------------------------------------------------------
+    # Batch analysis
+    # -----------------------------------------------------------------
+
     async def analyze_many(
         self,
         opportunities: list[
-            tuple[RankedOpportunity, SecurityDecision]
+            tuple[
+                RankedOpportunity,
+                SecurityDecision,
+            ]
         ],
         limit: Optional[int] = None,
     ) -> list[DeepIntelligenceResult]:
@@ -628,11 +1047,19 @@ class DeepIntelligenceEngine:
         selected = opportunities
 
         if limit is not None:
-            selected = opportunities[: max(0, limit)]
+            selected = opportunities[
+                : max(0, limit)
+            ]
 
-        results: list[DeepIntelligenceResult] = []
+        results: list[
+            DeepIntelligenceResult
+        ] = []
 
-        for ranked, security_decision in selected:
+        for (
+            ranked,
+            security_decision,
+        ) in selected:
+
             if not security_decision.passed:
                 results.append(
                     self._blocked_result(
@@ -641,16 +1068,22 @@ class DeepIntelligenceEngine:
                         security_decision,
                     )
                 )
+
                 continue
 
             try:
+
                 result = await self.analyze(
                     ranked=ranked,
                     security_decision=security_decision,
                 )
-                results.append(result)
+
+                results.append(
+                    result
+                )
 
             except Exception as exc:
+
                 logger.exception(
                     "Deep analysis failed for %s: %s",
                     ranked.candidate.mint,
@@ -659,10 +1092,18 @@ class DeepIntelligenceEngine:
 
         return results
 
+    # -----------------------------------------------------------------
+    # Actionable filtering
+    # -----------------------------------------------------------------
+
     def actionable(
         self,
-        results: list[DeepIntelligenceResult],
-    ) -> list[DeepIntelligenceResult]:
+        results: list[
+            DeepIntelligenceResult
+        ],
+    ) -> list[
+        DeepIntelligenceResult
+    ]:
         """
         Return only analytical opportunity candidates.
 
@@ -676,38 +1117,70 @@ class DeepIntelligenceEngine:
             if result.is_actionable
         ]
 
+    # -----------------------------------------------------------------
+    # Blocked result
+    # -----------------------------------------------------------------
+
     @staticmethod
     def _blocked_result(
         candidate: Candidate,
         ranked: RankedOpportunity,
         security_decision: SecurityDecision,
     ) -> DeepIntelligenceResult:
+        """
+        Build a result for candidates blocked by the security gate.
+
+        Smart Money is deliberately not analyzed for blocked tokens.
+        """
+
         return DeepIntelligenceResult(
             mint=candidate.mint,
+
             token_name=candidate.name,
+
             token_symbol=candidate.symbol,
+
             security_score=0.0,
+
             rank_score=round(
                 ranked.rank_score,
                 1,
             ),
+
             discovery_score=round(
                 candidate.discovery_score,
                 1,
             ),
+
             data_quality=0.0,
+
+            smart_money_score=0.0,
+
+            smart_money_confidence=0.0,
+
+            smart_money_state="NOT_ANALYZED",
+
             opportunity_score=0.0,
+
             confidence=100.0,
+
             decision=AVOID,
+
             risk_label="BLOCKED",
+
             risk_description=(
                 "تم حجب المرشح قبل التحليل العميق "
                 "بسبب فشل بوابة الأمان الأولية."
             ),
+
             criteria={},
+
             reasons=[],
+
             warnings=security_decision.warnings,
+
             blockers=security_decision.reasons,
+
             raw_analysis={},
         )
 
