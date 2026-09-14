@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  smoke-test:
+  integration-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -32,10 +32,222 @@ jobs:
         run: |
           python -c "from config.settings import settings"
           python -c "from database.db import init_db"
-          python -c "from database.models import Base"
+          python -c "from database.models import Base, SmartMoneyWallet"
           python -c "from analysis.engine import analyze_token, quick_score"
-          python -c "from bot.main import OpportunityHunterBot"
+          python -c "from analysis.discovery import Candidate, OpportunityDiscovery"
+          python -c "from analysis.ranker import RankedOpportunity"
+          python -c "from analysis.security_gate import SecurityDecision"
+          python -c "from analysis.smart_money_intelligence import SmartMoneyAssessment"
+          python -c "from analysis.deep_intelligence import DeepIntelligenceEngine"
 
-      - name: Smoke test passed
+      - name: Run integration test
         run: |
-          echo "Solana Opportunity Hunter smoke test passed."
+          python - <<'PY'
+          import asyncio
+
+          import analysis.deep_intelligence as di
+          from analysis.discovery import Candidate, OpportunityDiscovery
+          from analysis.ranker import RankedOpportunity
+          from analysis.security_gate import SecurityDecision
+          from analysis.smart_money_intelligence import SmartMoneyAssessment
+
+
+          MINT = "11111111111111111111111111111111"
+
+
+          async def fake_analyze_token(mint):
+              assert mint == MINT
+
+              return {
+                  "token_mint": mint,
+                  "token_name": "Integration Test Token",
+                  "token_symbol": "TEST",
+                  "total_score": 80.0,
+                  "risk_label": "LOW",
+                  "risk_desc": "Integration test",
+                  "data_quality": 90.0,
+                  "estimated_criteria": [],
+                  "criteria": {},
+                  "all_flags": [],
+              }
+
+
+          async def fake_smart_money_high(mint):
+              assert mint == MINT
+
+              return SmartMoneyAssessment(
+                  mint=mint,
+                  score=100.0,
+                  confidence=100.0,
+                  state="STRONG",
+                  known_wallet_count=5,
+                  active_known_wallet_count=5,
+                  total_known_holder_amount=500000.0,
+                  holder_coverage=25.0,
+              )
+
+
+          async def fake_smart_money_low(mint):
+              assert mint == MINT
+
+              return SmartMoneyAssessment(
+                  mint=mint,
+                  score=0.0,
+                  confidence=100.0,
+                  state="NONE",
+              )
+
+
+          async def main():
+              # ------------------------------------------------------
+              # 1. Discovery layer
+              # ------------------------------------------------------
+
+              candidate = Candidate(
+                  mint=MINT,
+                  source="integration_test",
+                  name="Integration Test Token",
+                  symbol="TEST",
+                  liquidity_usd=100000.0,
+                  volume_24h=1000000.0,
+                  price_change_5m=5.0,
+                  price_change_1h=10.0,
+                  txns_buys=70,
+                  txns_sells=30,
+                  maker_count=500,
+              )
+
+              discovery = OpportunityDiscovery(
+                  max_candidates=10
+              )
+
+              stored = await discovery.add_candidate(
+                  candidate
+              )
+
+              assert stored.discovery_score > 0
+              assert stored.mint == MINT
+
+              candidates = await discovery.get_candidates()
+
+              assert len(candidates) == 1
+              assert candidates[0].mint == MINT
+
+              # ------------------------------------------------------
+              # 2. Ranking contract
+              # ------------------------------------------------------
+
+              ranked = RankedOpportunity(
+                  candidate=stored,
+                  rank_score=80.0,
+                  priority="VERY_HIGH",
+                  reasons=["Integration test ranking"],
+                  warnings=[],
+              )
+
+              assert ranked.candidate.mint == MINT
+              assert ranked.rank_score == 80.0
+
+              # ------------------------------------------------------
+              # 3. Security Gate contract
+              # ------------------------------------------------------
+
+              passing_gate = SecurityDecision(
+                  mint=MINT,
+                  passed=True,
+                  status="PASS",
+                  risk_score=10.0,
+                  reasons=[],
+                  warnings=[],
+                  checks={},
+              )
+
+              assert passing_gate.passed is True
+
+              # ------------------------------------------------------
+              # 4. Deep Intelligence with STRONG Smart Money
+              # ------------------------------------------------------
+
+              di.analyze_token = fake_analyze_token
+              di.assess_smart_money = fake_smart_money_high
+
+              engine = DeepIntelligenceEngine()
+
+              high_result = await engine.analyze(
+                  ranked=ranked,
+                  security_decision=passing_gate,
+              )
+
+              assert high_result.mint == MINT
+              assert high_result.smart_money_score == 100.0
+              assert high_result.smart_money_state == "STRONG"
+              assert high_result.opportunity_score == 85.5
+              assert high_result.decision == "STRONG OPPORTUNITY"
+
+              # ------------------------------------------------------
+              # 5. Smart Money must actually affect the score
+              # ------------------------------------------------------
+
+              di.assess_smart_money = fake_smart_money_low
+
+              low_result = await engine.analyze(
+                  ranked=ranked,
+                  security_decision=passing_gate,
+              )
+
+              assert low_result.smart_money_score == 0.0
+              assert low_result.opportunity_score == 70.5
+
+              assert (
+                  high_result.opportunity_score
+                  > low_result.opportunity_score
+              )
+
+              assert (
+                  high_result.opportunity_score
+                  - low_result.opportunity_score
+                  == 15.0
+              )
+
+              # ------------------------------------------------------
+              # 6. Security Gate must override Smart Money
+              # ------------------------------------------------------
+
+              failing_gate = SecurityDecision(
+                  mint=MINT,
+                  passed=False,
+                  status="FAIL",
+                  risk_score=95.0,
+                  reasons=["Security test blocker"],
+                  warnings=[],
+                  checks={},
+              )
+
+              di.assess_smart_money = fake_smart_money_high
+
+              blocked_result = await engine.analyze(
+                  ranked=ranked,
+                  security_decision=failing_gate,
+              )
+
+              assert blocked_result.decision == "AVOID"
+              assert blocked_result.opportunity_score == 0.0
+              assert (
+                  blocked_result.smart_money_state
+                  == "NOT_ANALYZED"
+              )
+
+              print(
+                  "Integration test passed:"
+                  " discovery -> ranking contract ->"
+                  " security gate -> deep intelligence ->"
+                  " smart money scoring -> security override"
+              )
+
+
+          asyncio.run(main())
+          PY
+
+      - name: Test passed
+        run: |
+          echo "Solana Opportunity Hunter integration test passed."
