@@ -38,12 +38,15 @@ jobs:
           python -c "from analysis.ranker import RankedOpportunity"
           python -c "from analysis.security_gate import SecurityDecision"
           python -c "from analysis.smart_money_intelligence import SmartMoneyAssessment"
+          python -c "from analysis.market_intelligence import MarketIntelligence"
+          python -c "from analysis.manipulation import ManipulationAssessment"
           python -c "from analysis.deep_intelligence import DeepIntelligenceEngine"
 
       - name: Run integration test
         run: |
           python - <<'PY'
           import asyncio
+          from types import SimpleNamespace
 
           import analysis.deep_intelligence as di
 
@@ -64,6 +67,10 @@ jobs:
           MINT = "11111111111111111111111111111111"
 
 
+          # ------------------------------------------------------
+          # Fake base analysis
+          # ------------------------------------------------------
+
           async def fake_analyze_token(mint):
               assert mint == MINT
 
@@ -80,6 +87,10 @@ jobs:
                   "all_flags": [],
               }
 
+
+          # ------------------------------------------------------
+          # Fake Smart Money
+          # ------------------------------------------------------
 
           async def fake_smart_money_high(mint):
               assert mint == MINT
@@ -107,11 +118,73 @@ jobs:
               )
 
 
+          # ------------------------------------------------------
+          # Fake Market Intelligence
+          #
+          # We use deterministic values so the CI test verifies
+          # the new scoring architecture instead of depending on
+          # implementation details of market heuristics.
+          # ------------------------------------------------------
+
+          fake_market = SimpleNamespace(
+              market_score=100.0,
+              momentum_score=100.0,
+              volume_score=100.0,
+              pressure_score=100.0,
+              liquidity_score=100.0,
+              structure_score=100.0,
+              breakout_score=100.0,
+              market_state="STRONG",
+              momentum_state="STRONG",
+              volume_state="HIGH",
+              pressure_state="HEALTHY_BUY_PRESSURE",
+              breakout_state="POTENTIAL_BREAKOUT",
+              reasons=["Integration market signal"],
+              warnings=[],
+              metrics={},
+          )
+
+
+          class FakeMarketEngine:
+
+              def analyze(self, candidate):
+                  assert candidate.mint == MINT
+                  return fake_market
+
+
+          # ------------------------------------------------------
+          # Fake Manipulation Assessment
+          #
+          # Zero manipulation risk is intentional for the positive
+          # integration scenario.
+          # ------------------------------------------------------
+
+          fake_manipulation = SimpleNamespace(
+              mint=MINT,
+              manipulation_score=0.0,
+              risk_level="MINIMAL",
+              suspicious=False,
+              severe=False,
+              signals=[],
+              reasons=[],
+              warnings=[],
+              limitations=[],
+          )
+
+
+          class FakeManipulationEngine:
+
+              def analyze(self, candidate, market=None):
+                  assert candidate.mint == MINT
+                  assert market is fake_market
+                  return fake_manipulation
+
+
           async def main():
 
-              # ======================================================
+              # ==================================================
               # 1. Discovery layer
-              # ======================================================
+              # ==================================================
 
               candidate = Candidate(
                   mint=MINT,
@@ -149,15 +222,17 @@ jobs:
               )
 
 
-              # ======================================================
+              # ==================================================
               # 2. Ranking layer
-              # ======================================================
+              # ==================================================
 
               ranked = RankedOpportunity(
                   candidate=stored,
                   rank_score=80.0,
                   priority="VERY_HIGH",
-                  reasons=["Integration test ranking"],
+                  reasons=[
+                      "Integration test ranking"
+                  ],
                   warnings=[],
               )
 
@@ -170,9 +245,9 @@ jobs:
               )
 
 
-              # ======================================================
+              # ==================================================
               # 3. Security Gate
-              # ======================================================
+              # ==================================================
 
               passing_gate = SecurityDecision(
                   mint=MINT,
@@ -186,17 +261,35 @@ jobs:
 
               assert passing_gate.passed is True
 
-              print("Security Gate PASS case passed.")
+              print(
+                  "Security Gate PASS case passed."
+              )
 
 
-              # ======================================================
-              # 4. Deep Intelligence + STRONG Smart Money
-              # ======================================================
+              # ==================================================
+              # 4. Inject deterministic test dependencies
+              # ==================================================
 
               di.analyze_token = fake_analyze_token
-              di.assess_smart_money = fake_smart_money_high
+
+              di.assess_smart_money = (
+                  fake_smart_money_high
+              )
+
+              di.market_intelligence = (
+                  FakeMarketEngine()
+              )
+
+              di.manipulation_engine = (
+                  FakeManipulationEngine()
+              )
 
               engine = di.DeepIntelligenceEngine()
+
+
+              # ==================================================
+              # 5. Deep Intelligence + STRONG Smart Money
+              # ==================================================
 
               high_result = await engine.analyze(
                   ranked=ranked,
@@ -204,20 +297,48 @@ jobs:
               )
 
               assert high_result.mint == MINT
-              assert high_result.smart_money_score == 100.0
-              assert high_result.smart_money_state == "STRONG"
+
+              assert (
+                  high_result.smart_money_score
+                  == 100.0
+              )
+
+              assert (
+                  high_result.smart_money_state
+                  == "STRONG"
+              )
+
+              assert (
+                  high_result.market_score
+                  == 100.0
+              )
+
+              assert (
+                  high_result.manipulation_score
+                  == 0.0
+              )
 
 
-              # Calculate the expected score from the ACTUAL
-              # discovery score rather than hard-coding a number.
+              # --------------------------------------------------
+              # New Deep Intelligence weights:
+              #
+              # Security       25%
+              # Ranking        15%
+              # Discovery       8%
+              # Data Quality    7%
+              # Gate             5%
+              # Smart Money     15%
+              # Market          25%
+              # --------------------------------------------------
 
               expected_high_score = round(
-                  80.0 * 0.35
-                  + 80.0 * 0.20
-                  + stored.discovery_score * 0.10
-                  + 90.0 * 0.10
-                  + 100.0 * 0.10
-                  + 100.0 * 0.15,
+                  80.0 * 0.25
+                  + 80.0 * 0.15
+                  + stored.discovery_score * 0.08
+                  + 90.0 * 0.07
+                  + 100.0 * 0.05
+                  + 100.0 * 0.15
+                  + 100.0 * 0.25,
                   1,
               )
 
@@ -232,28 +353,38 @@ jobs:
               )
 
 
-              # ======================================================
-              # 5. Smart Money must affect Opportunity Score
-              # ======================================================
+              # ==================================================
+              # 6. Smart Money must affect Opportunity Score
+              # ==================================================
 
-              di.assess_smart_money = fake_smart_money_low
+              di.assess_smart_money = (
+                  fake_smart_money_low
+              )
 
               low_result = await engine.analyze(
                   ranked=ranked,
                   security_decision=passing_gate,
               )
 
-              assert low_result.smart_money_score == 0.0
-              assert low_result.smart_money_state == "NONE"
+              assert (
+                  low_result.smart_money_score
+                  == 0.0
+              )
+
+              assert (
+                  low_result.smart_money_state
+                  == "NONE"
+              )
 
 
               expected_low_score = round(
-                  80.0 * 0.35
-                  + 80.0 * 0.20
-                  + stored.discovery_score * 0.10
-                  + 90.0 * 0.10
-                  + 100.0 * 0.10
-                  + 0.0 * 0.15,
+                  80.0 * 0.25
+                  + 80.0 * 0.15
+                  + stored.discovery_score * 0.08
+                  + 90.0 * 0.07
+                  + 100.0 * 0.05
+                  + 0.0 * 0.15
+                  + 100.0 * 0.25,
                   1,
               )
 
@@ -262,10 +393,6 @@ jobs:
                   == expected_low_score
               )
 
-
-              # Smart Money score of 100 vs 0 must produce
-              # exactly 15 points of difference because Smart Money
-              # has a 15% weight.
 
               score_difference = round(
                   high_result.opportunity_score
@@ -289,31 +416,35 @@ jobs:
               )
 
 
-              # ======================================================
-              # 6. Security Gate must override Smart Money
-              # ======================================================
+              # ==================================================
+              # 7. Security Gate must override everything
+              # ==================================================
 
               failing_gate = SecurityDecision(
                   mint=MINT,
                   passed=False,
                   status="FAIL",
                   risk_score=95.0,
-                  reasons=["Security test blocker"],
+                  reasons=[
+                      "Security test blocker"
+                  ],
                   warnings=[],
                   checks={},
               )
 
-              # Even with STRONG Smart Money, the failed
-              # security gate must produce AVOID.
-
-              di.assess_smart_money = fake_smart_money_high
+              di.assess_smart_money = (
+                  fake_smart_money_high
+              )
 
               blocked_result = await engine.analyze(
                   ranked=ranked,
                   security_decision=failing_gate,
               )
 
-              assert blocked_result.decision == "AVOID"
+              assert (
+                  blocked_result.decision
+                  == "AVOID"
+              )
 
               assert (
                   blocked_result.opportunity_score
@@ -325,9 +456,7 @@ jobs:
                   == "NOT_ANALYZED"
               )
 
-              assert (
-                  blocked_result.blockers
-              )
+              assert blocked_result.blockers
 
               print(
                   "Security override passed:"
@@ -335,9 +464,9 @@ jobs:
               )
 
 
-              # ======================================================
-              # 7. Final integration confirmation
-              # ======================================================
+              # ==================================================
+              # 8. Final integration confirmation
+              # ==================================================
 
               print("")
               print(
@@ -354,6 +483,9 @@ jobs:
               )
               print(
                   "Deep Intelligence -> Smart Money ->"
+              )
+              print(
+                  "Market Intelligence -> Manipulation ->"
               )
               print(
                   "Opportunity Score -> Security Override"
