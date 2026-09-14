@@ -1,9 +1,22 @@
 """
 Discord entry point for Solana Opportunity Hunter.
 
-The Discord layer is intentionally kept separate from the analysis engine.
-The analysis engine remains responsible for Solana/token intelligence.
+Discord is only the presentation/control layer.
+
+The analytical pipeline is responsible for:
+    Discovery
+    Ranking
+    Security Gate
+    Deep Intelligence
+    Smart Money
+    Market Intelligence
+    Manipulation Risk
+    Opportunity Decision
+
+No real-money trading is executed by this bot.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -16,16 +29,23 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+
 # ---------------------------------------------------------------------------
 # Project root
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
 )
 
 if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+    sys.path.insert(
+        0,
+        PROJECT_ROOT,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Internal modules
@@ -35,7 +55,19 @@ from config.settings import settings
 from database.db import init_db
 from data.cache import cache
 from smart_money.wallet_list import load_from_db
-from analysis.engine import analyze_token, quick_score
+
+from analysis.engine import (
+    quick_score,
+)
+
+from analysis.opportunity_pipeline import (
+    opportunity_pipeline,
+    OpportunityPipelineResult,
+)
+
+from analysis.deep_intelligence import (
+    DeepIntelligenceResult,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -55,14 +87,35 @@ def setup_logging() -> None:
     )
 
     logging.basicConfig(
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        format=(
+            "%(asctime)s "
+            "[%(name)s] "
+            "%(levelname)s: "
+            "%(message)s"
+        ),
         level=log_level,
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ],
     )
 
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("discord").setLevel(logging.WARNING)
+    logging.getLogger(
+        "httpx"
+    ).setLevel(
+        logging.WARNING
+    )
+
+    logging.getLogger(
+        "httpcore"
+    ).setLevel(
+        logging.WARNING
+    )
+
+    logging.getLogger(
+        "discord"
+    ).setLevel(
+        logging.WARNING
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +123,13 @@ def setup_logging() -> None:
 # ---------------------------------------------------------------------------
 
 
-class OpportunityHunterBot(commands.Bot):
+class OpportunityHunterBot(
+    commands.Bot
+):
     """Main Discord application."""
 
     def __init__(self) -> None:
+
         intents = discord.Intents.default()
 
         super().__init__(
@@ -83,34 +139,53 @@ class OpportunityHunterBot(commands.Bot):
         )
 
         self.start_time = time.time()
+
         self._synced = False
 
-    async def setup_hook(self) -> None:
+    async def setup_hook(
+        self,
+    ) -> None:
         """Initialize services and synchronize slash commands."""
 
-        logger.info("Initializing database...")
+        logger.info(
+            "Initializing database..."
+        )
+
         await init_db()
 
-        logger.info("Loading smart-money wallets...")
+        logger.info(
+            "Loading smart-money wallets..."
+        )
+
         try:
+
             await load_from_db()
+
         except Exception as exc:
+
             logger.warning(
                 "Could not load smart-money wallets: %s",
                 exc,
             )
 
-        logger.info("Starting cache cleanup...")
+        logger.info(
+            "Starting cache cleanup..."
+        )
+
         try:
+
             cache.start_cleanup_task()
+
         except Exception as exc:
+
             logger.warning(
                 "Could not start cache cleanup: %s",
                 exc,
             )
 
-        # Sync global slash commands.
+        # Synchronize slash commands.
         try:
+
             synced = await self.tree.sync()
 
             logger.info(
@@ -121,25 +196,32 @@ class OpportunityHunterBot(commands.Bot):
             self._synced = True
 
         except Exception as exc:
+
             logger.exception(
                 "Failed to synchronize Discord commands: %s",
                 exc,
             )
 
-    async def close(self) -> None:
-        """Clean up application resources before Discord shutdown."""
+    async def close(
+        self,
+    ) -> None:
+        """Clean up application resources."""
 
-        logger.info("Shutting down Opportunity Hunter...")
+        logger.info(
+            "Shutting down Opportunity Hunter..."
+        )
 
         try:
+
             cache.stop_cleanup_task()
+
         except Exception as exc:
+
             logger.warning(
                 "Cache cleanup shutdown warning: %s",
                 exc,
             )
 
-        # Close HTTP clients used by the analysis layer.
         modules_to_close = (
             "data.solana_rpc",
             "data.helius_client",
@@ -150,7 +232,9 @@ class OpportunityHunterBot(commands.Bot):
         )
 
         for module_name in modules_to_close:
+
             try:
+
                 module = __import__(
                     module_name,
                     fromlist=["*"],
@@ -163,16 +247,20 @@ class OpportunityHunterBot(commands.Bot):
                 )
 
                 if close_function:
+
                     result = close_function()
 
-                    if asyncio.iscoroutine(result):
+                    if asyncio.iscoroutine(
+                        result
+                    ):
                         await result
 
             except ModuleNotFoundError:
-                # Optional module.
+
                 continue
 
             except Exception as exc:
+
                 logger.warning(
                     "Could not close %s: %s",
                     module_name,
@@ -190,57 +278,204 @@ bot = OpportunityHunterBot()
 # ---------------------------------------------------------------------------
 
 
-def is_valid_solana_address(value: str) -> bool:
+def is_valid_solana_address(
+    value: str,
+) -> bool:
     """Validate a Solana public key."""
 
     try:
+
         from solders.pubkey import Pubkey
 
-        Pubkey.from_string(value)
+        Pubkey.from_string(
+            value
+        )
+
         return True
 
     except Exception:
+
         return False
 
 
-def shorten_address(address: str) -> str:
-    """Shorten a Solana address for Discord display."""
+def shorten_address(
+    address: str,
+) -> str:
+    """Shorten a Solana address."""
 
     if len(address) <= 12:
         return address
 
-    return f"{address[:6]}...{address[-6:]}"
+    return (
+        f"{address[:6]}"
+        f"..."
+        f"{address[-6:]}"
+    )
 
 
-def format_usd(value: Any) -> str:
+def format_usd(
+    value: Any,
+) -> str:
     """Format USD values safely."""
 
     if value is None:
         return "غير متوفر"
 
     try:
+
         number = float(value)
 
         if number >= 1_000_000_000:
-            return f"${number / 1_000_000_000:.2f}B"
+            return (
+                f"${number / 1_000_000_000:.2f}B"
+            )
 
         if number >= 1_000_000:
-            return f"${number / 1_000_000:.2f}M"
+            return (
+                f"${number / 1_000_000:.2f}M"
+            )
 
         if number >= 1_000:
-            return f"${number / 1_000:.2f}K"
+            return (
+                f"${number / 1_000:.2f}K"
+            )
 
         if number < 0.01:
             return f"${number:.8f}"
 
         return f"${number:.4f}"
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         return "غير متوفر"
 
 
-def risk_color(score: float) -> discord.Color:
-    """Return a Discord embed color based on the score."""
+def format_percent(
+    value: Any,
+) -> str:
+    """Format percentage values."""
+
+    try:
+
+        return f"{float(value):.1f}%"
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return "غير متوفر"
+
+
+def score_bar(
+    score: float,
+) -> str:
+    """
+    Small visual score indicator for Discord.
+
+    This is only presentation and does not change scoring.
+    """
+
+    score = max(
+        0.0,
+        min(
+            float(score),
+            100.0,
+        ),
+    )
+
+    filled = int(
+        round(score / 10)
+    )
+
+    filled = max(
+        0,
+        min(
+            filled,
+            10,
+        ),
+    )
+
+    return (
+        "🟩" * filled
+        + "⬜" * (10 - filled)
+    )
+
+
+def score_color(
+    score: float,
+) -> discord.Color:
+    """Return a Discord color based on a score."""
+
+    if score >= 82:
+        return discord.Color.green()
+
+    if score >= 68:
+        return discord.Color.blue()
+
+    if score >= 50:
+        return discord.Color.gold()
+
+    return discord.Color.red()
+
+
+def decision_arabic(
+    decision: str,
+) -> tuple[str, str]:
+    """Translate analytical decision to Arabic."""
+
+    mapping = {
+        "STRONG OPPORTUNITY": (
+            "🟢 فرصة قوية",
+            "استحقاق مرتفع للدراسة والمتابعة",
+        ),
+
+        "OPPORTUNITY": (
+            "🟢 فرصة",
+            "توجد مجموعة إشارات إيجابية تستحق المتابعة",
+        ),
+
+        "WATCH": (
+            "🟡 مراقبة",
+            "الإشارات غير كافية لاتخاذ موقف إيجابي قوي",
+        ),
+
+        "SPECULATIVE": (
+            "🟠 مضاربية عالية",
+            "المخاطر أو عدم اليقين مرتفعان",
+        ),
+
+        "AVOID": (
+            "🔴 تجنب",
+            "تم اكتشاف شروط تمنع اعتبار التوكن فرصة",
+        ),
+
+        "INVALIDATED": (
+            "⛔ ملغاة",
+            "لم تعد الفرضية التحليلية صالحة",
+        ),
+    }
+
+    return mapping.get(
+        str(decision).upper(),
+        (
+            str(decision),
+            "لا يوجد وصف متاح",
+        ),
+    )
+
+
+def risk_color(
+    score: float,
+) -> discord.Color:
+    """
+    Security/risk presentation color.
+
+    Higher security score is better.
+    """
 
     if score >= 80:
         return discord.Color.green()
@@ -254,175 +489,245 @@ def risk_color(score: float) -> discord.Color:
     return discord.Color.red()
 
 
-CRITERIA_ARABIC = {
-    "contract": "أمان العقد",
-    "liquidity": "جودة السيولة",
-    "holders": "توزيع الحائزين",
-    "dev_wallet": "محفظة المطور",
-    "volume": "جودة الحجم",
-    "social": "المصداقية الاجتماعية",
-    "metadata": "جودة البيانات",
-    "smart_money": "Smart Money",
-}
+# ---------------------------------------------------------------------------
+# Deep Opportunity Report
+# ---------------------------------------------------------------------------
 
 
-def build_analysis_embed(
-    result: dict,
-    *,
-    quick: bool = False,
+def build_opportunity_embed(
+    result: DeepIntelligenceResult,
 ) -> discord.Embed:
-    """Convert an analysis result into a Discord embed."""
+    """
+    Build the main Arabic Opportunity Hunter report.
 
-    score = float(result.get("total_score", 0) or 0)
+    This is presentation only.
+    The underlying result remains the source of truth.
+    """
 
-    symbol = result.get("token_symbol") or "???"
-    name = result.get("token_name") or "Unknown"
-    mint = result.get("token_mint") or ""
-
-    risk_label = result.get(
-        "risk_label",
-        "غير محدد",
+    opportunity = float(
+        result.opportunity_score
     )
 
-    risk_desc = result.get(
-        "risk_desc",
-        "",
+    confidence = float(
+        result.confidence
     )
 
-    risk_emoji = result.get(
-        "risk_emoji",
-        "⚠️",
+    decision_title, decision_description = (
+        decision_arabic(
+            result.decision
+        )
     )
-
-    title_prefix = "⚡ فحص سريع" if quick else "🔎 تحليل Solana"
 
     embed = discord.Embed(
-        title=f"{title_prefix} — ${symbol}",
-        description=(
-            f"**{name}**\n"
-            f"{risk_emoji} **{risk_label}**\n"
-            f"{risk_desc}"
+        title=(
+            f"{decision_title} — "
+            f"${result.token_symbol}"
         ),
-        color=risk_color(score),
+        description=(
+            f"**{result.token_name}**\n"
+            f"{decision_description}\n\n"
+            f"{score_bar(opportunity)}\n"
+            f"🎯 **Opportunity Score:** "
+            f"`{opportunity:.1f}/100`"
+        ),
+        color=score_color(
+            opportunity
+        ),
     )
 
+    # ---------------------------------------------------------------
+    # Core decision
+    # ---------------------------------------------------------------
+
     embed.add_field(
-        name="📊 النتيجة",
-        value=f"**{score:.1f}/100**",
+        name="🎯 القرار التحليلي",
+        value=(
+            f"**{result.decision}**\n"
+            f"ثقة التحليل: "
+            f"`{confidence:.1f}%`"
+        ),
         inline=True,
     )
 
     embed.add_field(
-        name="💰 السعر",
-        value=format_usd(
-            result.get("price_usd")
+        name="🛡️ الأمان",
+        value=(
+            f"`{result.security_score:.1f}/100`\n"
+            f"{score_bar(result.security_score)}"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="📊 الترتيب",
+        value=(
+            f"`{result.rank_score:.1f}/100`\n"
+            f"{score_bar(result.rank_score)}"
+        ),
+        inline=True,
+    )
+
+    # ---------------------------------------------------------------
+    # Market intelligence
+    # ---------------------------------------------------------------
+
+    embed.add_field(
+        name="📈 ذكاء السوق",
+        value=(
+            f"السوق: `{result.market_score:.1f}/100`\n"
+            f"الزخم: `{result.momentum_score:.1f}`\n"
+            f"الحجم: `{result.volume_score:.1f}`\n"
+            f"الضغط: `{result.pressure_score:.1f}`"
         ),
         inline=True,
     )
 
     embed.add_field(
         name="💧 السيولة",
-        value=format_usd(
-            result.get("liquidity_usd")
+        value=(
+            f"`{result.liquidity_score:.1f}/100`\n"
+            f"الهيكل: `{result.structure_score:.1f}`\n"
+            f"Breakout: `{result.breakout_score:.1f}`"
         ),
         inline=True,
     )
 
     embed.add_field(
-        name="🏦 Market Cap",
-        value=format_usd(
-            result.get("market_cap")
+        name="🐋 Smart Money",
+        value=(
+            f"Score: `{result.smart_money_score:.1f}/100`\n"
+            f"State: `{result.smart_money_state}`\n"
+            f"Confidence: "
+            f"`{result.smart_money_confidence:.1f}%`"
         ),
         inline=True,
     )
 
-    if result.get("volume_24h") is not None:
-        embed.add_field(
-            name="📈 حجم 24 ساعة",
-            value=format_usd(
-                result.get("volume_24h")
-            ),
-            inline=True,
-        )
+    # ---------------------------------------------------------------
+    # Manipulation
+    # ---------------------------------------------------------------
 
-    analysis_time = result.get("analysis_time")
+    manipulation_level = (
+        result.manipulation_risk_level
+    )
 
-    if analysis_time is not None:
-        embed.add_field(
-            name="⏱️ زمن التحليل",
-            value=f"{analysis_time}s",
-            inline=True,
-        )
+    manipulation_emoji = "🟢"
 
-    # Full analysis criteria.
-    criteria = result.get("criteria")
+    if manipulation_level == "MEDIUM":
+        manipulation_emoji = "🟡"
 
-    if isinstance(criteria, dict) and criteria:
-        lines = []
+    elif manipulation_level == "HIGH":
+        manipulation_emoji = "🟠"
 
-        for key, criterion in criteria.items():
-            label = CRITERIA_ARABIC.get(
-                key,
-                key.replace("_", " ").title(),
-            )
+    elif manipulation_level == "CRITICAL":
+        manipulation_emoji = "🔴"
 
-            criterion_score = getattr(
-                criterion,
-                "score",
-                None,
-            )
+    embed.add_field(
+        name="⚠️ مخاطر التلاعب",
+        value=(
+            f"{manipulation_emoji} "
+            f"`{manipulation_level}`\n"
+            f"Score: "
+            f"`{result.manipulation_score:.1f}/100`"
+        ),
+        inline=True,
+    )
 
-            if criterion_score is None:
-                criterion_score = 0
+    embed.add_field(
+        name="🧪 جودة البيانات",
+        value=(
+            f"`{result.data_quality:.1f}/100`"
+        ),
+        inline=True,
+    )
 
-            lines.append(
-                f"**{label}:** {float(criterion_score):.0f}/100"
-            )
+    embed.add_field(
+        name="🔎 Discovery",
+        value=(
+            f"`{result.discovery_score:.1f}/100`"
+        ),
+        inline=True,
+    )
 
-        if lines:
-            embed.add_field(
-                name="🧠 معايير التحليل",
-                value="\n".join(lines),
-                inline=False,
-            )
+    # ---------------------------------------------------------------
+    # Reasons
+    # ---------------------------------------------------------------
 
-    # Risk flags.
-    flags = result.get("all_flags") or []
+    reasons = result.reasons or []
 
-    if flags:
-        flag_lines = []
+    if reasons:
 
-        for flag in flags[:8]:
-            flag_lines.append(
-                f"• {flag}"
-            )
+        lines = [
+            f"• {reason}"
+            for reason in reasons[:8]
+        ]
 
         embed.add_field(
-            name="⚠️ إشارات المخاطر",
-            value="\n".join(flag_lines),
+            name="✅ لماذا ظهرت هذه النتيجة؟",
+            value="\n".join(lines),
             inline=False,
         )
 
-    data_quality = result.get("data_quality")
+    # ---------------------------------------------------------------
+    # Warnings
+    # ---------------------------------------------------------------
 
-    if data_quality is not None:
+    warnings = result.warnings or []
+
+    if warnings:
+
+        lines = [
+            f"• {warning}"
+            for warning in warnings[:8]
+        ]
+
         embed.add_field(
-            name="🧪 جودة البيانات",
-            value=f"{data_quality}%",
-            inline=True,
+            name="⚠️ التحذيرات",
+            value="\n".join(lines),
+            inline=False,
         )
 
+    # ---------------------------------------------------------------
+    # Blockers
+    # ---------------------------------------------------------------
+
+    blockers = result.blockers or []
+
+    if blockers:
+
+        lines = [
+            f"• {blocker}"
+            for blocker in blockers[:6]
+        ]
+
+        embed.add_field(
+            name="🚫 أسباب الحجب",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    # ---------------------------------------------------------------
+    # Token links
+    # ---------------------------------------------------------------
+
+    mint = result.mint
+
     if mint:
+
         embed.add_field(
             name="🪙 Mint",
-            value=f"`{shorten_address(mint)}`",
+            value=(
+                f"`{shorten_address(mint)}`"
+            ),
             inline=False,
         )
 
         embed.add_field(
             name="🔗 روابط",
             value=(
-                f"[Solscan](https://solscan.io/token/{mint}) • "
+                f"[Solscan]"
+                f"(https://solscan.io/token/{mint})"
+                f" • "
                 f"[DexScreener]"
                 f"(https://dexscreener.com/solana/{mint})"
             ),
@@ -432,7 +737,8 @@ def build_analysis_embed(
     embed.set_footer(
         text=(
             "Solana Opportunity Hunter • "
-            "تحليل آلي — ليس ضمانًا للربح"
+            "تحليل احتمالي/استدلالي — "
+            "ليس ضمانًا للربح"
         )
     )
 
@@ -440,13 +746,200 @@ def build_analysis_embed(
 
 
 # ---------------------------------------------------------------------------
-# Slash commands
+# Security rejection report
+# ---------------------------------------------------------------------------
+
+
+def build_security_rejection_embed(
+    result: DeepIntelligenceResult,
+) -> discord.Embed:
+    """Build an embed for an AVOID result."""
+
+    embed = discord.Embed(
+        title=(
+            f"🔴 تجنب — "
+            f"${result.token_symbol}"
+        ),
+        description=(
+            f"**{result.token_name}**\n\n"
+            "تم حجب هذا المرشح بواسطة "
+            "**Security Gate** قبل التحليل العميق."
+        ),
+        color=discord.Color.red(),
+    )
+
+    embed.add_field(
+        name="🛡️ الأمان",
+        value=(
+            f"`{result.security_score:.1f}/100`"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="🎯 Opportunity Score",
+        value=(
+            f"`{result.opportunity_score:.1f}/100`"
+        ),
+        inline=True,
+    )
+
+    blockers = result.blockers or []
+
+    if blockers:
+
+        embed.add_field(
+            name="🚫 أسباب الحجب",
+            value="\n".join(
+                f"• {item}"
+                for item in blockers[:8]
+            ),
+            inline=False,
+        )
+
+    warnings = result.warnings or []
+
+    if warnings:
+
+        embed.add_field(
+            name="⚠️ التحذيرات",
+            value="\n".join(
+                f"• {item}"
+                for item in warnings[:8]
+            ),
+            inline=False,
+        )
+
+    embed.set_footer(
+        text=(
+            "Security Gate يمنع المرور "
+            "إلى التحليل العميق عند وجود خطر واضح."
+        )
+    )
+
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# Pipeline summary
+# ---------------------------------------------------------------------------
+
+
+def build_pipeline_summary_embed(
+    result: OpportunityPipelineResult,
+) -> discord.Embed:
+    """Build a summary of an opportunity-hunting cycle."""
+
+    embed = discord.Embed(
+        title="🎯 Opportunity Hunter",
+        description=(
+            "ملخص دورة البحث والتحليل الحالية."
+        ),
+        color=discord.Color.blurple(),
+    )
+
+    embed.add_field(
+        name="🔎 المكتشف",
+        value=str(
+            len(result.candidates)
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="📊 بعد الترتيب",
+        value=str(
+            len(result.ranked)
+        ),
+        inline=True,
+    )
+
+    passed = sum(
+        1
+        for _ranked, decision
+        in result.security_results
+        if decision.passed
+    )
+
+    embed.add_field(
+        name="🛡️ اجتاز الأمان",
+        value=str(passed),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="🧠 Deep Intelligence",
+        value=str(
+            len(result.deep_results)
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="💎 فرص قابلة للدراسة",
+        value=str(
+            len(result.actionable)
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="⏱️ الزمن",
+        value=(
+            f"{result.elapsed_seconds:.2f}s"
+        ),
+        inline=True,
+    )
+
+    if result.actionable:
+
+        lines = []
+
+        for item in result.actionable[:10]:
+
+            lines.append(
+                f"**${item.token_symbol}** — "
+                f"`{item.opportunity_score:.1f}` "
+                f"— `{item.decision}`"
+            )
+
+        embed.add_field(
+            name="🏆 أفضل النتائج",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    else:
+
+        embed.add_field(
+            name="📭 النتيجة",
+            value=(
+                "لم يتم العثور على فرصة "
+                "تستوفي شروط التحليل الحالية."
+            ),
+            inline=False,
+        )
+
+    embed.set_footer(
+        text=(
+            "نتائج تحليلية — "
+            "لا يوجد تنفيذ تلقائي للصفقات."
+        )
+    )
+
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# Slash command: help
 # ---------------------------------------------------------------------------
 
 
 @bot.tree.command(
     name="help",
-    description="عرض أوامر Solana Opportunity Hunter",
+    description=(
+        "عرض أوامر Solana Opportunity Hunter"
+    ),
 )
 async def help_command(
     interaction: discord.Interaction,
@@ -457,11 +950,18 @@ async def help_command(
         title="🤖 Solana Opportunity Hunter",
         description=(
             "نظام تحليل واكتشاف فرص على شبكة Solana.\n\n"
-            "**الأوامر الحالية:**\n"
-            "🔎 `/scan` — تحليل عميق للتوكن\n"
+
+            "**الأوامر:**\n"
+
+            "🔎 `/scan` — تحليل عميق لتوكن\n"
             "⚡ `/quick` — فحص سريع\n"
-            "🆔 `/myid` — عرض Discord User ID\n"
+            "🆔 `/myid` — Discord User ID\n"
             "❤️ `/health` — حالة النظام\n\n"
+
+            "**مراحل التحليل:**\n"
+            "Discovery → Ranking → Security → "
+            "Deep Intelligence → Decision\n\n"
+
             "⚠️ النتائج تحليلية وليست ضمانًا للربح."
         ),
         color=discord.Color.blurple(),
@@ -472,26 +972,42 @@ async def help_command(
     )
 
 
+# ---------------------------------------------------------------------------
+# Slash command: scan
+# ---------------------------------------------------------------------------
+
+
 @bot.tree.command(
     name="scan",
-    description="تحليل عميق لتوكن Solana",
+    description=(
+        "تحليل عميق لتوكن Solana"
+    ),
 )
 @app_commands.describe(
-    mint="عنوان Mint الكامل للتوكن على Solana",
+    mint=(
+        "عنوان Mint الكامل للتوكن على Solana"
+    ),
 )
 async def scan_command(
     interaction: discord.Interaction,
     mint: str,
 ) -> None:
-    """Run a complete token analysis."""
+    """
+    Run the complete Opportunity Hunter analysis
+    for one token.
+    """
 
     mint = mint.strip()
 
-    if not is_valid_solana_address(mint):
+    if not is_valid_solana_address(
+        mint
+    ):
+
         await interaction.response.send_message(
             "❌ عنوان Mint غير صالح على شبكة Solana.",
             ephemeral=True,
         )
+
         return
 
     await interaction.response.defer(
@@ -499,36 +1015,67 @@ async def scan_command(
     )
 
     try:
-        result = await analyze_token(mint)
 
-        embed = build_analysis_embed(
-            result,
-            quick=False,
+        logger.info(
+            "Discord /scan requested for %s",
+            mint,
         )
+
+        result = (
+            await opportunity_pipeline.analyze_mint(
+                mint
+            )
+        )
+
+        if result.decision == "AVOID":
+
+            embed = (
+                build_security_rejection_embed(
+                    result
+                )
+            )
+
+        else:
+
+            embed = (
+                build_opportunity_embed(
+                    result
+                )
+            )
 
         await interaction.followup.send(
             embed=embed
         )
 
     except Exception as exc:
+
         logger.exception(
-            "Full analysis failed for %s: %s",
+            "Opportunity analysis failed for %s: %s",
             mint,
             exc,
         )
 
         await interaction.followup.send(
-            "❌ حدث خطأ أثناء تحليل التوكن. "
-            "تحقق من العنوان وحاول مرة أخرى."
+            "❌ حدث خطأ أثناء التحليل العميق.\n"
+            "تحقق من عنوان Mint وحاول مرة أخرى."
         )
+
+
+# ---------------------------------------------------------------------------
+# Slash command: quick
+# ---------------------------------------------------------------------------
 
 
 @bot.tree.command(
     name="quick",
-    description="فحص سريع لأهم مخاطر توكن Solana",
+    description=(
+        "فحص سريع لأهم مخاطر توكن Solana"
+    ),
 )
 @app_commands.describe(
-    mint="عنوان Mint الكامل للتوكن على Solana",
+    mint=(
+        "عنوان Mint الكامل للتوكن على Solana"
+    ),
 )
 async def quick_command(
     interaction: discord.Interaction,
@@ -538,11 +1085,15 @@ async def quick_command(
 
     mint = mint.strip()
 
-    if not is_valid_solana_address(mint):
+    if not is_valid_solana_address(
+        mint
+    ):
+
         await interaction.response.send_message(
             "❌ عنوان Mint غير صالح على شبكة Solana.",
             ephemeral=True,
         )
+
         return
 
     await interaction.response.defer(
@@ -550,11 +1101,81 @@ async def quick_command(
     )
 
     try:
-        result = await quick_score(mint)
 
-        embed = build_analysis_embed(
-            result,
-            quick=True,
+        result = await quick_score(
+            mint
+        )
+
+        score = float(
+            result.get(
+                "total_score",
+                0,
+            )
+            or 0
+        )
+
+        symbol = result.get(
+            "token_symbol",
+            "???",
+        )
+
+        name = result.get(
+            "token_name",
+            "غير معروف",
+        )
+
+        embed = discord.Embed(
+            title=(
+                f"⚡ فحص سريع — "
+                f"${symbol}"
+            ),
+            description=(
+                f"**{name}**\n\n"
+                f"النتيجة: "
+                f"`{score:.1f}/100`"
+            ),
+            color=risk_color(
+                score
+            ),
+        )
+
+        embed.add_field(
+            name="🛡️ أمان العقد",
+            value=(
+                f"`{result.get('contract_score', 0)}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="💧 السيولة",
+            value=(
+                f"`{result.get('liquidity_score', 0)}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="👥 الحائزون",
+            value=(
+                f"`{result.get('holders_score', 0)}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="🪙 Mint",
+            value=(
+                f"`{shorten_address(mint)}`"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(
+            text=(
+                "الفحص السريع لا يستبدل "
+                "التحليل العميق."
+            )
         )
 
         await interaction.followup.send(
@@ -562,6 +1183,7 @@ async def quick_command(
         )
 
     except Exception as exc:
+
         logger.exception(
             "Quick analysis failed for %s: %s",
             mint,
@@ -573,9 +1195,16 @@ async def quick_command(
         )
 
 
+# ---------------------------------------------------------------------------
+# Slash command: myid
+# ---------------------------------------------------------------------------
+
+
 @bot.tree.command(
     name="myid",
-    description="عرض Discord User ID الخاص بك",
+    description=(
+        "عرض Discord User ID الخاص بك"
+    ),
 )
 async def myid_command(
     interaction: discord.Interaction,
@@ -583,14 +1212,24 @@ async def myid_command(
     """Return the current Discord user ID."""
 
     await interaction.response.send_message(
-        f"🆔 Discord User ID:\n`{interaction.user.id}`",
+        (
+            "🆔 Discord User ID:\n"
+            f"`{interaction.user.id}`"
+        ),
         ephemeral=True,
     )
 
 
+# ---------------------------------------------------------------------------
+# Slash command: health
+# ---------------------------------------------------------------------------
+
+
 @bot.tree.command(
     name="health",
-    description="عرض حالة البوت ومحرك التحليل",
+    description=(
+        "عرض حالة البوت ومحرك التحليل"
+    ),
 )
 async def health_command(
     interaction: discord.Interaction,
@@ -598,7 +1237,8 @@ async def health_command(
     """Return basic system health."""
 
     uptime = int(
-        time.time() - bot.start_time
+        time.time()
+        - bot.start_time
     )
 
     hours, remainder = divmod(
@@ -612,7 +1252,7 @@ async def health_command(
     )
 
     helius_status = (
-        "🟢 متصل"
+        "🟢 مضبوط"
         if settings.helius_api_key
         else "🟡 غير مضبوط"
     )
@@ -624,7 +1264,7 @@ async def health_command(
 
     embed.add_field(
         name="Discord",
-        value="🟢 متصل",
+        value="🟢 يعمل",
         inline=True,
     )
 
@@ -641,11 +1281,25 @@ async def health_command(
     )
 
     embed.add_field(
+        name="Opportunity Pipeline",
+        value="🟢 جاهز",
+        inline=True,
+    )
+
+    embed.add_field(
         name="Uptime",
         value=(
             f"{hours}h "
             f"{minutes}m "
             f"{seconds}s"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Trading",
+        value=(
+            "🔒 Paper/Analysis only"
         ),
         inline=True,
     )
@@ -661,7 +1315,7 @@ async def health_command(
 
 
 # ---------------------------------------------------------------------------
-# Discord events
+# Discord event
 # ---------------------------------------------------------------------------
 
 
@@ -703,33 +1357,44 @@ async def main() -> None:
         "Starting Solana Opportunity Hunter..."
     )
 
-    # Startup warnings are intentionally non-fatal.
-    for warning in settings.validate_startup():
-        logger.warning(warning)
+    for warning in (
+        settings.validate_startup()
+    ):
+        logger.warning(
+            warning
+        )
 
     if not settings.discord_bot_token:
+
         logger.error(
             "DISCORD_BOT_TOKEN is not configured."
         )
+
         return
 
     try:
+
         async with bot:
+
             await bot.start(
                 settings.discord_bot_token
             )
 
     except discord.LoginFailure:
+
         logger.error(
             "Discord login failed. "
             "Check the Discord bot token."
         )
 
     except Exception:
+
         logger.exception(
             "Discord bot stopped unexpectedly."
         )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(
+        main()
+)
