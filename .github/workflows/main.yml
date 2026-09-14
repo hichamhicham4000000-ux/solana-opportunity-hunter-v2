@@ -134,7 +134,7 @@ jobs:
               assert candidates[0].mint == MINT
 
               # ------------------------------------------------------
-              # 2. Ranking contract
+              # 2. Ranking layer
               # ------------------------------------------------------
 
               ranked = RankedOpportunity(
@@ -149,7 +149,7 @@ jobs:
               assert ranked.rank_score == 80.0
 
               # ------------------------------------------------------
-              # 3. Security Gate contract
+              # 3. Security Gate
               # ------------------------------------------------------
 
               passing_gate = SecurityDecision(
@@ -165,13 +165,13 @@ jobs:
               assert passing_gate.passed is True
 
               # ------------------------------------------------------
-              # 4. Deep Intelligence with STRONG Smart Money
+              # 4. Deep Intelligence + STRONG Smart Money
               # ------------------------------------------------------
 
               di.analyze_token = fake_analyze_token
               di.assess_smart_money = fake_smart_money_high
 
-              engine = DeepIntelligenceEngine()
+              engine = di.DeepIntelligenceEngine()
 
               high_result = await engine.analyze(
                   ranked=ranked,
@@ -185,7 +185,7 @@ jobs:
               assert high_result.decision == "STRONG OPPORTUNITY"
 
               # ------------------------------------------------------
-              # 5. Smart Money must actually affect the score
+              # 5. Smart Money must affect Opportunity Score
               # ------------------------------------------------------
 
               di.assess_smart_money = fake_smart_money_low
@@ -239,9 +239,9 @@ jobs:
 
               print(
                   "Integration test passed:"
-                  " discovery -> ranking contract ->"
-                  " security gate -> deep intelligence ->"
-                  " smart money scoring -> security override"
+                  " discovery -> ranking -> security gate ->"
+                  " deep intelligence -> smart money scoring ->"
+                  " security override"
               )
 
 
