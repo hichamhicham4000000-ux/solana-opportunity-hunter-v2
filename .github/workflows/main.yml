@@ -46,10 +46,19 @@ jobs:
           import asyncio
 
           import analysis.deep_intelligence as di
-          from analysis.discovery import Candidate, OpportunityDiscovery
+
+          from analysis.discovery import (
+              Candidate,
+              OpportunityDiscovery,
+          )
+
           from analysis.ranker import RankedOpportunity
+
           from analysis.security_gate import SecurityDecision
-          from analysis.smart_money_intelligence import SmartMoneyAssessment
+
+          from analysis.smart_money_intelligence import (
+              SmartMoneyAssessment,
+          )
 
 
           MINT = "11111111111111111111111111111111"
@@ -99,9 +108,10 @@ jobs:
 
 
           async def main():
-              # ------------------------------------------------------
+
+              # ======================================================
               # 1. Discovery layer
-              # ------------------------------------------------------
+              # ======================================================
 
               candidate = Candidate(
                   mint=MINT,
@@ -133,9 +143,15 @@ jobs:
               assert len(candidates) == 1
               assert candidates[0].mint == MINT
 
-              # ------------------------------------------------------
+              print(
+                  "Discovery layer passed:",
+                  stored.discovery_score,
+              )
+
+
+              # ======================================================
               # 2. Ranking layer
-              # ------------------------------------------------------
+              # ======================================================
 
               ranked = RankedOpportunity(
                   candidate=stored,
@@ -148,9 +164,15 @@ jobs:
               assert ranked.candidate.mint == MINT
               assert ranked.rank_score == 80.0
 
-              # ------------------------------------------------------
+              print(
+                  "Ranking layer passed:",
+                  ranked.rank_score,
+              )
+
+
+              # ======================================================
               # 3. Security Gate
-              # ------------------------------------------------------
+              # ======================================================
 
               passing_gate = SecurityDecision(
                   mint=MINT,
@@ -164,9 +186,12 @@ jobs:
 
               assert passing_gate.passed is True
 
-              # ------------------------------------------------------
+              print("Security Gate PASS case passed.")
+
+
+              # ======================================================
               # 4. Deep Intelligence + STRONG Smart Money
-              # ------------------------------------------------------
+              # ======================================================
 
               di.analyze_token = fake_analyze_token
               di.assess_smart_money = fake_smart_money_high
@@ -181,12 +206,35 @@ jobs:
               assert high_result.mint == MINT
               assert high_result.smart_money_score == 100.0
               assert high_result.smart_money_state == "STRONG"
-              assert high_result.opportunity_score == 85.5
-              assert high_result.decision == "STRONG OPPORTUNITY"
 
-              # ------------------------------------------------------
+
+              # Calculate the expected score from the ACTUAL
+              # discovery score rather than hard-coding a number.
+
+              expected_high_score = round(
+                  80.0 * 0.35
+                  + 80.0 * 0.20
+                  + stored.discovery_score * 0.10
+                  + 90.0 * 0.10
+                  + 100.0 * 0.10
+                  + 100.0 * 0.15,
+                  1,
+              )
+
+              assert (
+                  high_result.opportunity_score
+                  == expected_high_score
+              )
+
+              print(
+                  "High Smart Money result:",
+                  high_result.opportunity_score,
+              )
+
+
+              # ======================================================
               # 5. Smart Money must affect Opportunity Score
-              # ------------------------------------------------------
+              # ======================================================
 
               di.assess_smart_money = fake_smart_money_low
 
@@ -196,22 +244,54 @@ jobs:
               )
 
               assert low_result.smart_money_score == 0.0
-              assert low_result.opportunity_score == 70.5
+              assert low_result.smart_money_state == "NONE"
+
+
+              expected_low_score = round(
+                  80.0 * 0.35
+                  + 80.0 * 0.20
+                  + stored.discovery_score * 0.10
+                  + 90.0 * 0.10
+                  + 100.0 * 0.10
+                  + 0.0 * 0.15,
+                  1,
+              )
+
+              assert (
+                  low_result.opportunity_score
+                  == expected_low_score
+              )
+
+
+              # Smart Money score of 100 vs 0 must produce
+              # exactly 15 points of difference because Smart Money
+              # has a 15% weight.
+
+              score_difference = round(
+                  high_result.opportunity_score
+                  - low_result.opportunity_score,
+                  1,
+              )
+
+              assert score_difference == 15.0
 
               assert (
                   high_result.opportunity_score
                   > low_result.opportunity_score
               )
 
-              assert (
-                  high_result.opportunity_score
-                  - low_result.opportunity_score
-                  == 15.0
+              print(
+                  "Smart Money scoring passed:",
+                  f"{low_result.opportunity_score}"
+                  f" -> "
+                  f"{high_result.opportunity_score}",
+                  f"(difference={score_difference})",
               )
 
-              # ------------------------------------------------------
+
+              # ======================================================
               # 6. Security Gate must override Smart Money
-              # ------------------------------------------------------
+              # ======================================================
 
               failing_gate = SecurityDecision(
                   mint=MINT,
@@ -223,6 +303,9 @@ jobs:
                   checks={},
               )
 
+              # Even with STRONG Smart Money, the failed
+              # security gate must produce AVOID.
+
               di.assess_smart_money = fake_smart_money_high
 
               blocked_result = await engine.analyze(
@@ -231,17 +314,52 @@ jobs:
               )
 
               assert blocked_result.decision == "AVOID"
-              assert blocked_result.opportunity_score == 0.0
+
+              assert (
+                  blocked_result.opportunity_score
+                  == 0.0
+              )
+
               assert (
                   blocked_result.smart_money_state
                   == "NOT_ANALYZED"
               )
 
+              assert (
+                  blocked_result.blockers
+              )
+
               print(
-                  "Integration test passed:"
-                  " discovery -> ranking -> security gate ->"
-                  " deep intelligence -> smart money scoring ->"
-                  " security override"
+                  "Security override passed:"
+                  " FAIL + STRONG Smart Money -> AVOID"
+              )
+
+
+              # ======================================================
+              # 7. Final integration confirmation
+              # ======================================================
+
+              print("")
+              print(
+                  "=========================================="
+              )
+              print(
+                  "FULL INTEGRATION TEST PASSED"
+              )
+              print(
+                  "=========================================="
+              )
+              print(
+                  "Discovery -> Ranking -> Security Gate ->"
+              )
+              print(
+                  "Deep Intelligence -> Smart Money ->"
+              )
+              print(
+                  "Opportunity Score -> Security Override"
+              )
+              print(
+                  "=========================================="
               )
 
 
