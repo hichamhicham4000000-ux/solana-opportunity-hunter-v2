@@ -1,0 +1,32 @@
+# Environment and repository metadata
+.env
+.git
+.gitignore
+.claude
+.vscode
+.idea
+
+# Local Python environments and caches
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Tests and local database files
+tests/
+*.db
+
+# Documentation
+*.md
+
+# Local OS files
+.DS_Store
+Thumbs.db
+
+# Docker ignore file itself
+.dockerignore
+
+# IMPORTANT:
+# run.py must NOT be ignored because Dockerfile copies it into the image.
