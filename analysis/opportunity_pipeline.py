@@ -1,23 +1,20 @@
 """
 Opportunity Hunter Pipeline.
 
-Connects the existing analytical layers:
+Coordinates the existing analytical layers:
 
-    Discovery
-        ↓
-    Ranking
-        ↓
-    Security Gate
-        ↓
-    Deep Intelligence
-        ↓
-    Final Opportunity Decision
+Discovery
+    ↓
+Ranking
+    ↓
+Security Gate
+    ↓
+Deep Intelligence
+    ↓
+Final Opportunity Decision
 
 This module does not execute trades.
-
-It is responsible only for coordinating the analytical pipeline
-and returning structured results to the Discord layer or future
-monitoring services.
+It only coordinates analysis and returns structured results.
 """
 
 from __future__ import annotations
@@ -64,24 +61,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OpportunityPipelineResult:
-    """
-    Complete result of one opportunity-hunting cycle.
-
-    candidates:
-        Tokens discovered during the cycle.
-
-    ranked:
-        Candidates that passed the ranking threshold.
-
-    security_results:
-        Ranked candidates together with their security decisions.
-
-    deep_results:
-        Candidates that reached Deep Intelligence.
-
-    actionable:
-        Candidates classified as OPPORTUNITY or STRONG OPPORTUNITY.
-    """
+    """Complete result of one Opportunity Hunter cycle."""
 
     candidates: list[Candidate] = field(
         default_factory=list
@@ -124,9 +104,8 @@ class OpportunityPipeline:
     """
     Main coordinator for the Opportunity Hunter.
 
-    The pipeline intentionally keeps every analytical layer separate.
-    This makes it possible to replace or improve one layer without
-    rewriting the entire system.
+    Each analytical layer remains independent so individual
+    components can be improved without rebuilding the system.
     """
 
     def __init__(
@@ -173,17 +152,10 @@ class OpportunityPipeline:
         self,
         limit: Optional[int] = None,
     ) -> list[Candidate]:
-        """
-        Run one discovery cycle.
 
-        Sources currently supported by Discovery:
-            - DexScreener
-            - Pump.fun callbacks
-
-        The Discovery layer remains responsible for deduplication.
-        """
-
-        candidates = await self.discovery.discover_once()
+        candidates = (
+            await self.discovery.discover_once()
+        )
 
         if limit is not None:
             candidates = candidates[
@@ -206,12 +178,6 @@ class OpportunityPipeline:
         candidates: list[Candidate],
         limit: Optional[int] = None,
     ) -> list[RankedOpportunity]:
-        """
-        Rank discovered candidates.
-
-        Candidates below the ranker's minimum threshold are excluded
-        from the deep-analysis queue.
-        """
 
         ranked = self.ranker.rank_many(
             candidates,
@@ -238,12 +204,6 @@ class OpportunityPipeline:
             SecurityDecision,
         ]
     ]:
-        """
-        Run the initial security gate.
-
-        A failed candidate remains in the result so the caller can
-        understand why it was rejected.
-        """
 
         results = (
             self.security_gate.evaluate_many(
@@ -267,7 +227,7 @@ class OpportunityPipeline:
         return results
 
     # -----------------------------------------------------------------
-    # Deep intelligence
+    # Deep Intelligence
     # -----------------------------------------------------------------
 
     async def deep_analyze(
@@ -280,12 +240,6 @@ class OpportunityPipeline:
         ],
         limit: Optional[int] = None,
     ) -> list[DeepIntelligenceResult]:
-        """
-        Run Deep Intelligence on security-approved candidates.
-
-        Failed candidates are not sent to the expensive deep-analysis
-        layer.
-        """
 
         approved = [
             (
@@ -315,7 +269,7 @@ class OpportunityPipeline:
         )
 
     # -----------------------------------------------------------------
-    # Full opportunity hunt
+    # Full Opportunity Hunt
     # -----------------------------------------------------------------
 
     async def hunt(
@@ -324,21 +278,6 @@ class OpportunityPipeline:
         ranking_limit: Optional[int] = None,
         deep_limit: Optional[int] = None,
     ) -> OpportunityPipelineResult:
-        """
-        Execute one complete Opportunity Hunter cycle.
-
-        Pipeline:
-
-            Discovery
-                ↓
-            Ranking
-                ↓
-            Security Gate
-                ↓
-            Deep Intelligence
-                ↓
-            Actionable Opportunities
-        """
 
         started = time.monotonic()
 
@@ -351,7 +290,6 @@ class OpportunityPipeline:
         )
 
         if not candidates:
-
             elapsed = (
                 time.monotonic()
                 - started
@@ -379,7 +317,6 @@ class OpportunityPipeline:
         )
 
         if not ranked:
-
             elapsed = (
                 time.monotonic()
                 - started
@@ -419,7 +356,7 @@ class OpportunityPipeline:
         )
 
         # -------------------------------------------------------------
-        # 5. Actionable opportunities
+        # 5. Actionable Opportunities
         # -------------------------------------------------------------
 
         actionable = (
@@ -469,15 +406,12 @@ class OpportunityPipeline:
         """
         Run the complete analytical pipeline for one known Mint.
 
-        This is used by the Discord /scan command.
+        Used by the Discord /scan command.
 
-        Because a manually supplied Mint does not necessarily come
-        from Discovery, we first obtain the existing token analysis
-        and construct a Candidate from its market data.
-
-        Deep Intelligence may call analyze_token again, but the
-        existing analysis cache normally prevents unnecessary
-        duplicate network work.
+        Important:
+        The Candidate receives the complete market snapshot returned
+        by analyze_token(), including short-term momentum and
+        buy/sell activity.
         """
 
         mint = mint.strip()
@@ -496,7 +430,7 @@ class OpportunityPipeline:
         )
 
         # -------------------------------------------------------------
-        # Candidate construction
+        # Pair information
         # -------------------------------------------------------------
 
         pair_address = analysis.get(
@@ -507,13 +441,23 @@ class OpportunityPipeline:
             "dex_id"
         )
 
-        pair_url = None
+        pair_url = analysis.get(
+            "pair_url"
+        )
 
-        if pair_address:
+        if not pair_url and pair_address:
             pair_url = (
                 "https://dexscreener.com/"
                 f"solana/{pair_address}"
             )
+
+        # -------------------------------------------------------------
+        # Candidate construction
+        #
+        # IMPORTANT:
+        # These short-term market fields were previously omitted.
+        # They are now explicitly transferred into Candidate.
+        # -------------------------------------------------------------
 
         candidate = Candidate(
             mint=mint,
@@ -530,6 +474,7 @@ class OpportunityPipeline:
                 "???",
             ),
 
+            # Basic market data
             price_usd=analysis.get(
                 "price_usd"
             ),
@@ -546,10 +491,61 @@ class OpportunityPipeline:
                 "volume_24h"
             ),
 
+            # ---------------------------------------------------------
+            # Short-term price momentum
+            # ---------------------------------------------------------
+
+            price_change_5m=analysis.get(
+                "price_change_5m"
+            ),
+
+            price_change_1h=analysis.get(
+                "price_change_1h"
+            ),
+
+            price_change_6h=analysis.get(
+                "price_change_6h"
+            ),
+
+            price_change_24h=analysis.get(
+                "price_change_24h"
+            ),
+
+            # ---------------------------------------------------------
+            # Buy / Sell activity
+            # ---------------------------------------------------------
+
+            txns_buys=(
+                analysis.get(
+                    "txns_24h_buys"
+                )
+                or 0
+            ),
+
+            txns_sells=(
+                analysis.get(
+                    "txns_24h_sells"
+                )
+                or 0
+            ),
+
+            maker_count=(
+                analysis.get(
+                    "maker_count"
+                )
+                or 0
+            ),
+
+            # ---------------------------------------------------------
+            # Pair
+            # ---------------------------------------------------------
+
             pair_url=pair_url,
 
             dex_id=dex_id,
 
+            # Manual scans are not discovery events.
+            # Keep a neutral discovery score.
             discovery_score=50.0,
 
             reasons=[
